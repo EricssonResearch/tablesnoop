@@ -41,6 +41,7 @@ To trace IPv4 routing table lookups including the failed ones,
 across all network namespaces use the following command:
 
 ```bash
+tablesnoop -4 -x -g
 v4: src: 10.100.85.1  dst: 192.168.22.11 
 v4: src: 10.100.85.1  dst: 192.168.22.11 --> gw: 10.100.80.1 egress: eth0
 v4: src: 192.168.22.11  dst: 10.100.85.1 --> gw:  egress: eth0
