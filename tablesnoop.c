@@ -131,7 +131,7 @@ static long get_pid_for_netns(const struct array *netns_cache, unsigned long net
 
 static void run_proc_in_netns(void)
 {
-    // char netns_path[NETNS_PATHLEN];
+    char netns_path[NETNS_PATHLEN];
     struct dirent *netns_entry;
     DIR *netnsfs;
 
@@ -151,25 +151,23 @@ static void run_proc_in_netns(void)
         pid_t fpid = fork();
         if (fpid == 0) { // child process
 
-            char *netns_path = realpath(netns_entry->d_name, NULL);
-            if (!netns_path)
-                stop("realpath");
+            snprintf(netns_path, NETNS_PATHLEN - strlen(netns_entry->d_name), fmt_netns_dir, netns_entry->d_name);
 
             int ns_fd = open(netns_path, O_RDONLY);
             if (ns_fd < 0) {
-                free(netns_path);
-                stop("open");
+                fprintf(stderr, "Unable to open %s\n", netns_path);
+                goto error;
             }
 
             if (setns(ns_fd, CLONE_NEWNET) < 0) {
-                free(netns_path);
                 close(ns_fd);
-                stop("setns");
+                perror("setns");
+                goto error;
             }
 
-            free(netns_path);
             pause(); // wait for stopping...
 
+error:
             closedir(netnsfs);
             close(ns_fd);
             env.exiting = true;
@@ -212,8 +210,8 @@ static struct array *create_netns_cache(void)
     if (env.verbose)
         printf("Build cache for netns to pid association...\n");
 
-    errno = 0;
     while ((entry = readdir(procfs)) != NULL) {
+        errno = 0;
         if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
             continue;
 
