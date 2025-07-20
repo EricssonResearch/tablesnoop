@@ -15,6 +15,11 @@
 #define AF_INET6    10  /* Internet IPv6 Protocol 	*/
 #endif
 
+#ifndef SKB_DST_PTRMASK
+#define SKB_DST_NOREF   1UL
+#define SKB_DST_PTRMASK ~(SKB_DST_NOREF)
+#endif
+
 // For console output coloring
 // source: https://stackoverflow.com/a/23657072/3945980
 #define RED   "\x1B[31m"
@@ -58,6 +63,7 @@ enum event_type {
     FIB_V6,
     RULE_V4,
     RULE_V6,
+    SRV6_END,
 };
 
 struct rule_data {
@@ -131,6 +137,17 @@ struct fib_data {
     };
 };
 
+struct srv6_data {
+    int action;
+    int table;
+    int iif;
+    int oif;
+    struct {
+        unsigned char loclen;
+        unsigned char funclen;
+    } csid;
+};
+
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
 struct fib_event {
@@ -139,8 +156,10 @@ struct fib_event {
     union {
         struct fib_data fib;
         struct rule_data rule;
+        struct srv6_data srv6;
     };
     bool success : 1;
 };
+
 
 #endif //_H_COMMON

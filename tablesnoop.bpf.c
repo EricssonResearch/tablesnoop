@@ -306,4 +306,101 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
     return BPF_OK;
 }
 
+/*struct seg6_local_lwt {
+	int action;
+	struct ipv6_sr_hdr *srh;
+	int table;
+	struct in_addr nh4;
+	struct in6_addr nh6;
+	int iif;
+	int oif;
+	struct bpf_lwt_prog bpf;
+	struct seg6_end_dt_info dt_info;
+	struct seg6_flavors_info flv_info;
+	struct pcpu_seg6_local_counters __percpu *pcpu_counters;
+	int headroom;
+	struct seg6_action_desc *desc;
+	unsigned long parsed_optattrs;
+};
+
+struct seg6_action_desc {
+	int action;
+	unsigned long attrs;
+	unsigned long optattrs;
+	int (*input)(struct sk_buff *skb, struct seg6_local_lwt *slwt);
+	int static_headroom;
+	struct seg6_local_lwtunnel_ops slwt_ops;
+};*/
+
+
+static void construct_srv6_event(struct fib_event *e, const struct seg6_local_lwt *srv6_lwt)
+{
+    const struct seg6_action_desc *desc = srv6_lwt->desc;
+
+    bpf_printk("SRV6 action %d table %d", srv6_lwt->action, srv6_lwt->table);
+
+    e->type = SRV6_END;
+    e->srv6.action = srv6_lwt->action;
+    e->srv6.table = srv6_lwt->table;
+    e->srv6.iif = srv6_lwt->iif;
+    e->srv6.oif = srv6_lwt->oif;
+}
+
+static inline int probe_input_action(struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
+{
+    const struct net *net = skb->dev->nd_net.net;
+
+    if (!env.global_netns && env.original_netns != net->net_cookie)
+        return BPF_OK;
+
+    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    if (!e)
+        return BPF_OK;
+
+    e->netns = net->net_cookie;
+    construct_srv6_event(e, slwt);
+    e->success = (ret == 0);
+
+    bpf_ringbuf_submit(e, 0);
+    return BPF_OK;
+}
+
+SEC("fexit/input_action_end")
+int BPF_PROG(fexit_act_end, struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
+{
+    return probe_input_action(skb, slwt, ret);
+}
+
+SEC("fexit/input_action_end_dt6")
+int BPF_PROG(fexit_act_dt46, struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
+{
+    return probe_input_action(skb, slwt, ret);
+}
+
+
+// SEC("fexit/seg6_local_input_core")
+// int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
+//                                  struct sk_buff *skb, int ret)
+// {
+//     if (!env.global_netns && env.original_netns != net->net_cookie)
+//         return BPF_OK;
+//
+//     void *skbdst = (void *)(skb->_skb_refdst & SKB_DST_PTRMASK);
+//     struct dst_entry *dst = bpf_core_cast(skbdst, struct dst_entry);
+//
+// 	struct seg6_local_lwt *slwt =
+//         bpf_core_cast(dst->lwtstate, struct seg6_local_lwt);
+//
+//     struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+//     if (!e)
+//         return BPF_OK;
+//
+//     e->netns = net->net_cookie;
+//     construct_srv6_event(e, slwt);
+//     e->success = (ret == 0);
+//
+//     bpf_ringbuf_submit(e, 0);
+//     return BPF_OK;
+// }
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

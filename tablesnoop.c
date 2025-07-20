@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 #include <sched.h>
 #include <search.h>
+#include <linux/seg6_local.h>
 
 #include "lib.h"
 #include "tablesnoop.h"
@@ -438,6 +439,52 @@ static void print_rule_event(const struct fib_event *e)
     printf("\n");
 }
 
+static inline const char *srv6_actid_to_name(int action_id)
+{
+    const char *action_names[SEG6_LOCAL_ACTION_MAX + 1] = {
+        [SEG6_LOCAL_ACTION_UNSPEC] = "unspecified",
+        [SEG6_LOCAL_ACTION_END] = "End",
+        [SEG6_LOCAL_ACTION_END_X] = "End.X",
+        [SEG6_LOCAL_ACTION_END_T] = "End.T",
+        [SEG6_LOCAL_ACTION_END_DX2] = "End.DX2",
+        [SEG6_LOCAL_ACTION_END_DX6] = "End.DX6",
+        [SEG6_LOCAL_ACTION_END_DX4] = "End.DX4",
+        [SEG6_LOCAL_ACTION_END_DT6] = "End.DT6",
+        [SEG6_LOCAL_ACTION_END_DT4] = "End.DT4",
+        [SEG6_LOCAL_ACTION_END_B6] = "End.B6",
+        [SEG6_LOCAL_ACTION_END_B6_ENCAP] = "End.B6.Encap",
+        [SEG6_LOCAL_ACTION_END_BM] = "End.BM",
+        [SEG6_LOCAL_ACTION_END_S] = "End.S",
+        [SEG6_LOCAL_ACTION_END_AS] = "End.AS",
+        [SEG6_LOCAL_ACTION_END_AM] = "End.AM",
+        [SEG6_LOCAL_ACTION_END_BPF] = "End.BPF",
+        [SEG6_LOCAL_ACTION_END_DT46] = "End.DT46",
+    };
+
+    if (action_id > SEG6_LOCAL_ACTION_MAX)
+        return "invalid";
+
+    return action_names[action_id];
+}
+
+static void print_srv6_event(const struct fib_event *e)
+{
+    const char *fmt_srv6 = "srv6:" RESET " iif: %s oif: %s table id: %d action: " GRN " %s" RESET "\n";
+    printf("netns: %lu ", e->netns);
+    char iifstr[IFNAMSIZ];
+    char oifstr[IFNAMSIZ];
+
+    if (!e->success && !env.show_lookup_fails)
+        return;
+
+    // if (env.verbose) {
+    if_netns_indextoname(iifstr, e->netns, e->srv6.iif);
+    if_netns_indextoname(oifstr, e->netns, e->srv6.oif);
+    // }
+    color_lookup_result(e);
+    printf(fmt_srv6, iifstr, oifstr, e->srv6.table, srv6_actid_to_name(e->srv6.action));
+}
+
 static int fib_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
 {
     if (data_sz != sizeof(struct fib_event)) {
@@ -453,6 +500,8 @@ static int fib_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t
         break;
     case RULE_V4:
     case RULE_V6: print_rule_event(e);
+        break;
+    case SRV6_END: print_srv6_event(e);
         break;
     default: fprintf(stderr, RED "unknown event type\n" RESET);
     }
