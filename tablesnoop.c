@@ -14,6 +14,9 @@
 #include <sys/wait.h>
 #include <sched.h>
 #include <search.h>
+
+#include <linux/lwtunnel.h>
+#include <linux/seg6_iptunnel.h>
 #include <linux/seg6_local.h>
 
 #include "lib.h"
@@ -340,6 +343,26 @@ static void print_nexthop(const struct nexthop_data *nh)
     else if (nh->family == AF_INET6)
         inet_ntop(AF_INET6, nh->v6.gw, gw, INET6_ADDRSTRLEN);
     printf(fmt_nh, gw, nh->egress);
+
+    if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6) {
+        const char *seg6_mode = "unknown";
+        switch (nh->lwt_seg6_mode) {
+            case SEG6_IPTUN_MODE_INLINE: seg6_mode = "inline"; break;
+            case SEG6_IPTUN_MODE_ENCAP: seg6_mode = "encap"; break;
+            case SEG6_IPTUN_MODE_L2ENCAP: seg6_mode = "l2encap"; break;
+            case SEG6_IPTUN_MODE_ENCAP_RED: seg6_mode = "encap_red"; break;
+            case SEG6_IPTUN_MODE_L2ENCAP_RED: seg6_mode = "l2encap_red"; break;
+        }
+
+        printf(" SEG6 mode %s SRH type %u segments_left %u first_segment %u [", seg6_mode,
+                nh->lwt_seg6_hdr.type, nh->lwt_seg6_hdr.segments_left, nh->lwt_seg6_hdr.first_segment);
+        for (unsigned i=0; i<=nh->lwt_seg6_hdr.segments_left; i++) {
+            char seg[INET6_ADDRSTRLEN] = { 0 };
+            inet_ntop(AF_INET6, &nh->lwt_seg6_hdr.segments[i], seg, INET6_ADDRSTRLEN);
+            printf(" %s", seg);
+        }
+        printf("]");
+    }
 }
 
 static void print_fib_event(const struct fib_event *e)

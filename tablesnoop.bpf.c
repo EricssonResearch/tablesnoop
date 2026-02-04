@@ -88,6 +88,23 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
         nhd->invalid = true;
         return;
     }
+
+    nhd->lwt_type = 0;
+    if (nhc->nhc_lwtstate) {
+        if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_SEG6) {
+            struct seg6_lwt *slwt = (struct seg6_lwt *)nhc->nhc_lwtstate->data;
+            struct ipv6_sr_hdr *srh = slwt->tuninfo[0].srh;
+
+            nhd->lwt_type = nhc->nhc_lwtstate->type;
+            nhd->lwt_seg6_mode = slwt->tuninfo[0].mode;
+
+            __builtin_memcpy(&nhd->lwt_seg6_hdr, srh, sizeof(struct ipv6_sr_hdr));
+            for (unsigned i=0; i<SRH_MAX_HOPS; i++) {
+                if (i > srh->segments_left) break;
+                __builtin_memcpy(&nhd->lwt_seg6_hdr.segments[i], &srh->segments[i], sizeof(struct in6_addr));
+            }
+        }
+    }
 }
 
 
