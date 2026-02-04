@@ -56,47 +56,37 @@ static inline bool is_dscp_full_supported()
     return false;
 }
 
-static void construct_nexthop_data(struct nexthop_data *nhd, const void *result, enum event_type type)
+static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh_common *nhc, enum event_type type)
 {
-    const struct fib_nh_common *nhc = NULL;
-    const struct fib6_result *nh6 = NULL;
-    const struct fib_result *nh4 = NULL;
-
     struct in6_addr *in6 = NULL;
     struct in_addr *in4 = NULL;
     void *gw = NULL;
 
     if (type == FIB_V4) {
         gw = &nhd->v4.gw;
-        nh4 = bpf_core_cast(result, struct fib_result);
-        nhc = nh4->nhc;
     }
     else if (type == FIB_V6) {
         gw = &nhd->v6.gw;
-        nh6 = bpf_core_cast(result, struct fib6_result);
-        nhc = &nh6->nh->nh_common;
     } else {
         nhd->invalid = true;
         return;
     }
 
-    if (nhc) {
-        struct net_device *dev = nhc->nhc_dev;
-        if (dev)
-            __builtin_memcpy(&nhd->egress, dev->name, sizeof(nhd->egress));
+    struct net_device *dev = nhc->nhc_dev;
+    if (dev)
+        __builtin_memcpy(&nhd->egress, dev->name, sizeof(nhd->egress));
 
-        if (nhc->nhc_gw_family == AF_INET) {
-            // bpf_printk("v4 gw: %pI4", &nhc->nhc_gw.ipv4);
-            nhd->family = AF_INET;
-            __builtin_memcpy(gw, &nhc->nhc_gw.ipv4, sizeof(struct in_addr));
-        } else if (type == FIB_V6 || nhc->nhc_gw_family == AF_INET6) {
-            // bpf_printk("v6 gw: %pI6", &nhc->nhc_gw.ipv6);
-            nhd->family = AF_INET6;
-            __builtin_memcpy(gw, &nhc->nhc_gw.ipv6, sizeof(struct in6_addr));
-        } else {
-            nhd->invalid = true;
-            return;
-        }
+    if (nhc->nhc_gw_family == AF_INET) {
+        // bpf_printk("v4 gw: %pI4", &nhc->nhc_gw.ipv4);
+        nhd->family = AF_INET;
+        __builtin_memcpy(gw, &nhc->nhc_gw.ipv4, sizeof(struct in_addr));
+    } else if (type == FIB_V6 || nhc->nhc_gw_family == AF_INET6) {
+        // bpf_printk("v6 gw: %pI6", &nhc->nhc_gw.ipv6);
+        nhd->family = AF_INET6;
+        __builtin_memcpy(gw, &nhc->nhc_gw.ipv6, sizeof(struct in6_addr));
+    } else {
+        nhd->invalid = true;
+        return;
     }
 }
 
@@ -128,7 +118,7 @@ static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb
     in = (struct in_addr *) &e->fib.v4.src;
     in->s_addr = flp->saddr;
 
-    construct_nexthop_data(&e->fib.nh, res, e->type);
+    construct_nexthop_data(&e->fib.nh, res->nhc, e->type);
 }
 
 
@@ -154,7 +144,7 @@ static void construct_fib6_event(struct fib_event *e, struct net *net, struct fi
     *in6 = fl6->saddr;
     e->fib.v6.flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
 
-    construct_nexthop_data(&e->fib.nh, res, e->type);
+    construct_nexthop_data(&e->fib.nh, &res->nh->nh_common, e->type);
 }
 
 
