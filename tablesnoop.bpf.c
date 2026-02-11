@@ -7,10 +7,10 @@
 #include <endian.h>
 
 #include "tablesnoop.h"
+#include "flavors.h"
 
 #ifndef bpf_core_cast
 #error "bpf_core_cast not available in libbpf < 1.4.0"
-#include <error_libbpf_too_old>
 #endif
 
 extern int LINUX_KERNEL_VERSION __kconfig;
@@ -110,7 +110,13 @@ static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb
     e->fib.table_id = tb->tb_id;
     e->fib.oif = flp->__fl_common.flowic_oif;
     e->fib.iif = flp->__fl_common.flowic_iif;
-    e->fib.dscp = flp->__fl_common.flowic_tos >> 2; // TODO: DSCP is not correct
+
+    struct flowi_common___pre6_18 *flowic_pre6_18  = (void*)&flp->__fl_common;
+    if (bpf_core_field_exists(flowic_pre6_18->flowic_tos)) {
+        e->fib.dscp = flowic_pre6_18->flowic_tos >> 2; // TODO: DSCP is not correct?
+    } else {
+        e->fib.dscp = flp->__fl_common.flowic_dscp >> 2;
+    }
 
     if (flp->__fl_common.flowic_proto == IPPROTO_TCP || flp->__fl_common.flowic_proto == IPPROTO_UDP) {
         e->fib.dport = bpf_ntohs(flp->uli.ports.dport);
@@ -155,11 +161,6 @@ static void construct_fib6_event(struct fib_event *e, struct net *net, struct fi
 static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule *rule,
                                      const struct fib_rules_ops *ops)
 {
-    struct fib4_rule *rule4 = NULL;
-    struct fib6_rule *rule6 = NULL;
-    bool dscp_full4 = bpf_core_field_exists(rule4->dscp_full);
-    bool dscp_full6 = bpf_core_field_exists(rule6->dscp_full);
-
     e->rule.table = rule->table;
     e->netns = ops->fro_net->net_cookie;
 
@@ -177,10 +178,15 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
     if (rule->target && (e->rule.has_goto = true))
         e->rule.goto_target = rule->target;
 
-    if (ops->family == AF_INET ) {
+    if (ops->family == AF_INET) {
+        const struct fib4_rule *rule4 = bpf_core_cast(rule, struct fib4_rule);
+        const struct fib4_rule___v6_12 *rule4_v6_12 = (void*)rule4;
+        bool dscp_full4 = false;
 
-        // rule4 = (struct fib4_rule *) rule;
-        rule4 = bpf_core_cast(rule, struct fib4_rule);
+        if (bpf_core_field_exists(rule4_v6_12->dscp_full)) {
+            dscp_full4 = rule4_v6_12->dscp_full;
+        }
+
         e->type = RULE_V4;
 
         if (rule4->dst_len && (e->rule.has_dstaddr = true))
@@ -199,9 +205,14 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
         }
 
     } else if (ops->family == AF_INET6) {
+        struct fib6_rule *rule6 = bpf_core_cast(rule, struct fib6_rule);
+        struct fib6_rule___v6_12 *rule6_v6_12 = (void*)rule6;
+        bool dscp_full6 = false;
 
-        // rule6 = (struct fib6_rule *) rule;
-        rule6 = bpf_core_cast(rule, struct fib6_rule);
+        if (bpf_core_field_exists(rule6_v6_12->dscp_full)) {
+            dscp_full6 = rule6_v6_12->dscp_full;
+        }
+
         e->type = RULE_V6;
         // bpf_printk("table: %d", rule6->common.table);
 
