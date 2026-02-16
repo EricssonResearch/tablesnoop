@@ -170,6 +170,7 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
 {
     e->rule.table = rule->table;
     e->netns = ops->fro_net->net_cookie;
+    e->rule.invalid = false;
 
     if (rule->iifname[0] && (e->rule.has_iifname = true))
         __builtin_memcpy(e->rule.iifname, rule->iifname, IFNAMSIZ);
@@ -238,6 +239,7 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
             }
         }
     } else {
+        e->type = RULE_V4;
         e->rule.invalid = true;
     }
 }
