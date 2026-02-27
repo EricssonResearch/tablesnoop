@@ -101,11 +101,29 @@ struct rule_data {
     };
 };
 
+#define SRH_MAX_HOPS 10
+// we need this to be slightly different from ipv6_sr_hdr
+struct my_ipv6_sr_hdr {
+        __u8    nexthdr;
+        __u8    hdrlen;
+        __u8    type;
+        __u8    segments_left;
+        __u8    first_segment; /* Represents the last_entry field of SRH */
+        __u8    flags;
+        __u16   tag;
+
+        struct in6_addr segments[SRH_MAX_HOPS]; // this is [] in the original
+};
+
 struct nexthop_data {
     bool invalid;
     char egress[IFNAMSIZ];
-    int type;
     int family;
+
+    unsigned short lwt_type;
+    int lwt_seg6_mode;
+    struct my_ipv6_sr_hdr lwt_seg6_hdr;
+
     union {
         struct {
             unsigned int gw;

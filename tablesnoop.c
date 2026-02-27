@@ -14,6 +14,9 @@
 #include <sys/wait.h>
 #include <sched.h>
 #include <search.h>
+
+#include <linux/lwtunnel.h>
+#include <linux/seg6_iptunnel.h>
 #include <linux/seg6_local.h>
 
 #include "lib.h"
@@ -48,20 +51,15 @@ static void signal_handler(int signo)
 	env.exiting = true;
 }
 
-static inline void stop(const char *err)
-{
-    perror(err);
-    env.exiting = true;
-}
-
 /* By default Linux uses a fast-path when no custom ip rules
- * exitst. This skip fib_rules_lookup call, which breaks
+ * exist. This skip fib_rules_lookup call, which breaks
  * tablesnoop's IPv4 FIB lookup to netns association logic.
- * As a workaround, lets insert and immediately remove a dummy
+ * As a workaround, let's insert and immediately remove a dummy
  * ip rule, just to force fib_rules_lookup call before FIB lookup.
  * */
-static void force_rule_lookups(void)
+static bool force_rule_lookups(void)
 {
+#define BAIL(msg) perror(msg); return false;
     char ns_path[NETNS_PATHLEN];
     int ret = 0;
     int fd;
@@ -71,11 +69,13 @@ static void force_rule_lookups(void)
         snprintf(ns_path, NETNS_PATHLEN, fmt_proc_netns, ns->pid);
 
         fd = open(ns_path, O_RDONLY);
-        if (fd < 0)
-            stop("open");
+        if (fd < 0) {
+            BAIL("open");
+        }
 
-        if (setns(fd, CLONE_NEWNET) < 0)
-            stop("setns");
+        if (setns(fd, CLONE_NEWNET) < 0) {
+            BAIL("setns");
+        }
 
         ret += system("ip rule add protocol 255");
         ret += system("ip -6 rule add protocol 255");
@@ -84,14 +84,17 @@ static void force_rule_lookups(void)
         ret += system("ip -6 rule del protocol 255");
         if (ret) {
             fprintf(stderr, RED "Failed to initialize tablesnoop, exiting...\n" RESET);
-            stop("system");
+            BAIL("system");
         }
 
-        if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0)
-            stop("setns");
+        if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0) {
+            BAIL("setns");
+        }
 
         close(fd);
     }
+
+    return true;
 }
 
 /* @returns: PID for the given netns inode number
@@ -180,9 +183,9 @@ error:
 }
 
 /* Returns a cache with (netns_cookie, netns_inode, pid) tuples.
- * It scan through every PID in procfs and collect  from them.
+ * It scans through every PID in procfs and collect  from them.
  * Multiple processes can have the same netns, the
- * cache only store every netns once with the smallest PID.
+ * cache only stores every netns once with the smallest PID.
  * PID and inode required for enable global rule tracing,
  * for filtering we could use net_cookie only...
  * */
@@ -340,6 +343,26 @@ static void print_nexthop(const struct nexthop_data *nh)
     else if (nh->family == AF_INET6)
         inet_ntop(AF_INET6, nh->v6.gw, gw, INET6_ADDRSTRLEN);
     printf(fmt_nh, gw, nh->egress);
+
+    if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6) {
+        const char *seg6_mode = "unknown";
+        switch (nh->lwt_seg6_mode) {
+            case SEG6_IPTUN_MODE_INLINE: seg6_mode = "inline"; break;
+            case SEG6_IPTUN_MODE_ENCAP: seg6_mode = "encap"; break;
+            case SEG6_IPTUN_MODE_L2ENCAP: seg6_mode = "l2encap"; break;
+            case SEG6_IPTUN_MODE_ENCAP_RED: seg6_mode = "encap_red"; break;
+            case SEG6_IPTUN_MODE_L2ENCAP_RED: seg6_mode = "l2encap_red"; break;
+        }
+
+        printf(" SEG6 mode %s SRH type %u segments_left %u first_segment %u [", seg6_mode,
+                nh->lwt_seg6_hdr.type, nh->lwt_seg6_hdr.segments_left, nh->lwt_seg6_hdr.first_segment);
+        for (unsigned i=0; i<=nh->lwt_seg6_hdr.segments_left; i++) {
+            char seg[INET6_ADDRSTRLEN] = { 0 };
+            inet_ntop(AF_INET6, &nh->lwt_seg6_hdr.segments[i], seg, INET6_ADDRSTRLEN);
+            printf(" %s", seg);
+        }
+        printf("]");
+    }
 }
 
 static void print_fib_event(const struct fib_event *e)
@@ -551,7 +574,9 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
 
 int main(int argc, char *argv[])
 {
-    int ret;
+    struct ring_buffer *rb = NULL;
+    struct tablesnoop_bpf *obj = NULL;
+    int ret = EXIT_SUCCESS;
     struct argp_option options[] =
     {
         { "v4", '4', 0, 0, "Use IPv4. By default, both IPv4 and IPv6 are logged.", 0},
@@ -580,10 +605,12 @@ int main(int argc, char *argv[])
     if (env.verbose)
         printf("Event size: %lu bytes\n", sizeof(struct fib_event));
 
-    force_rule_lookups();
+    if (force_rule_lookups() == false) {
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
 
-    struct ring_buffer *rb = NULL;
-    struct tablesnoop_bpf *obj = tablesnoop_bpf__open_and_load();
+    obj = tablesnoop_bpf__open_and_load();
     if (!obj) {
         perror("Failed to open and load BPF object\n");
         ret = EXIT_FAILURE;

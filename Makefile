@@ -26,7 +26,7 @@ static: tablesnoop
 vmlinux.h:
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
-tablesnoop.bpf.o: tablesnoop.bpf.c vmlinux.h tablesnoop.h
+tablesnoop.bpf.o: tablesnoop.bpf.c vmlinux.h tablesnoop.h flavors.h
 	$(BPF_CC) -g -O2 -target bpf $(TARGET) -c $< -o $@
 
 tablesnoop.skel.h: tablesnoop.bpf.o
