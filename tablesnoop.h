@@ -121,7 +121,9 @@ struct nexthop_data {
     int family;
 
     unsigned short lwt_type;
-    int lwt_seg6_mode;
+    int lwt_seg6_mode; // also for seg6_local
+    int lwt_seg6local_table;
+    //TODO nh4 nh6
     struct my_ipv6_sr_hdr lwt_seg6_hdr;
 
     union {
@@ -158,8 +160,11 @@ struct fib_data {
 struct srv6_data {
     int action;
     int table;
-    int iif;
-    int oif;
+    int vrf_table; // End.DT4 and End.DT46
+    int iif; //TODO seg6_local doesn't use this at all
+    int oif; //TODO seg6_local only uses this in End.X
+    struct in_addr nh4;
+    struct in6_addr nh6;
     struct {
         unsigned char loclen;
         unsigned char funclen;

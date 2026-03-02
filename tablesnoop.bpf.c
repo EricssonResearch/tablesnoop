@@ -91,11 +91,11 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
 
     nhd->lwt_type = 0;
     if (nhc->nhc_lwtstate) {
+        nhd->lwt_type = nhc->nhc_lwtstate->type;
         if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_SEG6) {
             struct seg6_lwt *slwt = (struct seg6_lwt *)nhc->nhc_lwtstate->data;
             struct ipv6_sr_hdr *srh = slwt->tuninfo[0].srh;
 
-            nhd->lwt_type = nhc->nhc_lwtstate->type;
             nhd->lwt_seg6_mode = slwt->tuninfo[0].mode;
 
             __builtin_memcpy(&nhd->lwt_seg6_hdr, srh, sizeof(struct ipv6_sr_hdr));
@@ -103,6 +103,12 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
                 if (i > srh->segments_left) break;
                 __builtin_memcpy(&nhd->lwt_seg6_hdr.segments[i], &srh->segments[i], sizeof(struct in6_addr));
             }
+        }
+        else if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
+            struct seg6_local_lwt *slwt = (struct seg6_local_lwt *)nhc->nhc_lwtstate->data;
+
+            nhd->lwt_seg6_mode = slwt->action;
+            nhd->lwt_seg6local_table = slwt->table;
         }
     }
 }
@@ -362,8 +368,12 @@ static void construct_srv6_event(struct fib_event *e, const struct seg6_local_lw
     e->type = SRV6_END;
     e->srv6.action = srv6_lwt->action;
     e->srv6.table = srv6_lwt->table;
+    e->srv6.vrf_table = srv6_lwt->dt_info.vrf_table;
     e->srv6.iif = srv6_lwt->iif;
     e->srv6.oif = srv6_lwt->oif;
+    e->srv6.nh4 = srv6_lwt->nh4;
+    e->srv6.nh6 = srv6_lwt->nh6;
+    //TODO flv_info for CSID?
 }
 
 static inline int probe_input_action(struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
@@ -391,36 +401,40 @@ int BPF_PROG(fexit_act_end, struct sk_buff *skb, struct seg6_local_lwt *slwt, in
     return probe_input_action(skb, slwt, ret);
 }
 
-SEC("fexit/input_action_end_dt6")
+SEC("fexit/input_action_end_dt46")
 int BPF_PROG(fexit_act_dt46, struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
 {
     return probe_input_action(skb, slwt, ret);
 }
 
 
-// SEC("fexit/seg6_local_input_core")
-// int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
-//                                  struct sk_buff *skb, int ret)
-// {
-//     if (!env.global_netns && env.original_netns != net->net_cookie)
-//         return BPF_OK;
-//
-//     void *skbdst = (void *)(skb->_skb_refdst & SKB_DST_PTRMASK);
-//     struct dst_entry *dst = bpf_core_cast(skbdst, struct dst_entry);
-//
-// 	struct seg6_local_lwt *slwt =
-//         bpf_core_cast(dst->lwtstate, struct seg6_local_lwt);
-//
-//     struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
-//     if (!e)
-//         return BPF_OK;
-//
-//     e->netns = net->net_cookie;
-//     construct_srv6_event(e, slwt);
-//     e->success = (ret == 0);
-//
-//     bpf_ringbuf_submit(e, 0);
-//     return BPF_OK;
-// }
+SEC("fentry/seg6_local_input_core")
+int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
+        struct sk_buff *skb)
+//SEC("fexit/seg6_local_input_core")
+//int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
+//                                 struct sk_buff *skb, int ret)
+{
+    int ret = 0;
+    if (!env.global_netns && env.original_netns != net->net_cookie)
+        return BPF_OK;
+
+    void *skbdst = (void *)(skb->_skb_refdst & SKB_DST_PTRMASK);
+    struct dst_entry *dst = bpf_core_cast(skbdst, struct dst_entry);
+
+    struct seg6_local_lwt *slwt =
+        bpf_core_cast(dst->lwtstate->data, struct seg6_local_lwt);
+
+    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    if (!e)
+        return BPF_OK;
+
+    e->netns = net->net_cookie;
+    construct_srv6_event(e, slwt);
+    e->success = (ret == 0);
+
+    bpf_ringbuf_submit(e, 0);
+    return BPF_OK;
+}
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

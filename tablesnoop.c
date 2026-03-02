@@ -333,6 +333,7 @@ static void color_lookup_result(const struct fib_event *e)
     }
 }
 
+static inline const char *srv6_actid_to_name(int action_id);
 static void print_nexthop(const struct nexthop_data *nh)
 {
     const char *fmt_nh = MAG "--> " RESET "gw: " GRN "%s " RESET "egress: %s";
@@ -354,7 +355,7 @@ static void print_nexthop(const struct nexthop_data *nh)
             case SEG6_IPTUN_MODE_L2ENCAP_RED: seg6_mode = "l2encap_red"; break;
         }
 
-        printf(" SEG6 mode %s SRH type %u segments_left %u first_segment %u [", seg6_mode,
+        printf(" SEG6 mode " YEL "%s" RESET " SRH type " YEL "%u" RESET " segments_left %u first_segment %u [", seg6_mode,
                 nh->lwt_seg6_hdr.type, nh->lwt_seg6_hdr.segments_left, nh->lwt_seg6_hdr.first_segment);
         for (unsigned i=0; i<=nh->lwt_seg6_hdr.segments_left; i++) {
             char seg[INET6_ADDRSTRLEN] = { 0 };
@@ -362,6 +363,9 @@ static void print_nexthop(const struct nexthop_data *nh)
             printf(" %s", seg);
         }
         printf("]");
+    }
+    else if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
+        printf(" SEG6Local action " YEL "%s" RESET " table %d", srv6_actid_to_name(nh->lwt_seg6_mode), nh->lwt_seg6local_table);
     }
 }
 
@@ -492,10 +496,11 @@ static inline const char *srv6_actid_to_name(int action_id)
 
 static void print_srv6_event(const struct fib_event *e)
 {
-    const char *fmt_srv6 = "srv6:" RESET " iif: %s oif: %s table id: %d action: " GRN " %s" RESET "\n";
+    const char *fmt_srv6 = "srv6:" RESET " iif: %s oif: %s table id: %d vrf table: %d action: " YEL "%s" RESET;
     printf("netns: %lu ", e->netns);
     char iifstr[IFNAMSIZ];
     char oifstr[IFNAMSIZ];
+    char nh[INET6_ADDRSTRLEN] = { 0 };
 
     if (!e->success && !env.show_lookup_fails)
         return;
@@ -505,7 +510,12 @@ static void print_srv6_event(const struct fib_event *e)
     if_netns_indextoname(oifstr, e->netns, e->srv6.oif);
     // }
     color_lookup_result(e);
-    printf(fmt_srv6, iifstr, oifstr, e->srv6.table, srv6_actid_to_name(e->srv6.action));
+    printf(fmt_srv6, iifstr, oifstr, e->srv6.table, e->srv6.vrf_table, srv6_actid_to_name(e->srv6.action));
+    inet_ntop(AF_INET, &e->srv6.nh4, nh, INET_ADDRSTRLEN);
+    printf(" nh4 " MAG "%s" RESET, nh);
+    inet_ntop(AF_INET6, &e->srv6.nh6, nh, INET6_ADDRSTRLEN);
+    printf(" nh6 " BLU "%s" RESET, nh);
+    printf("\n");
 }
 
 static int fib_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
