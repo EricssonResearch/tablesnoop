@@ -115,7 +115,7 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
     }
 }
 
-static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb, const struct flowi4 *flp,
+static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_table *tb, const struct flowi4 *flp,
     const struct fib_result *res, int fib_flags, unsigned long netns, int ret)
 {
     struct in_addr *in;
@@ -139,7 +139,7 @@ static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb
 }
 
 
-static void construct_fib6_event(struct fib_event *e, struct net *net, struct fib6_table *table, int oif,
+static void construct_fib6_event(struct tablesnoop_event *e, struct net *net, struct fib6_table *table, int oif,
                                  struct flowi6 *fl6, struct fib6_result *res, int strict, int ret)
 {
     struct in6_addr *in6;
@@ -158,7 +158,7 @@ static void construct_fib6_event(struct fib_event *e, struct net *net, struct fi
 }
 
 
-static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule *rule,
+static void construct_fib_rule_event(struct tablesnoop_event *e, const struct fib_rule *rule,
                                      const struct fib_rules_ops *ops)
 {
     e->rule.table = rule->table;
@@ -254,7 +254,7 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
         return BPF_OK;
     // bpf_printk("fib4 lookup %d", ret);
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -276,7 +276,7 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
         return BPF_OK;
     // bpf_printk("fib6 lookup %d", ret);
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -308,7 +308,7 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
         (env.v6only && ops->family != AF_INET6))
         return BPF_OK;
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -319,7 +319,7 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
     return BPF_OK;
 }
 
-static void construct_srv6_event(struct fib_event *e, const struct seg6_local_lwt *srv6_lwt)
+static void construct_srv6_event(struct tablesnoop_event *e, const struct seg6_local_lwt *srv6_lwt)
 {
     const struct seg6_action_desc *desc = srv6_lwt->desc;
 
@@ -337,7 +337,7 @@ static inline int probe_input_action(struct sk_buff *skb, struct seg6_local_lwt 
     if (!env.global_netns && env.original_netns != net->net_cookie)
         return BPF_OK;
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -379,7 +379,7 @@ int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
     struct seg6_local_lwt *slwt =
         bpf_core_cast(dst->lwtstate->data, struct seg6_local_lwt);
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 

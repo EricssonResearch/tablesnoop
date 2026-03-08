@@ -322,7 +322,7 @@ out_pid:
     return NULL;
 }
 
-static void color_lookup_result(const struct fib_event *e)
+static void color_lookup_result(const struct tablesnoop_event *e)
 {
     if (e->success) {
         printf(GRN);
@@ -449,7 +449,7 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
     }
 }
 
-static void print_fib_event(const struct fib_event *e)
+static void print_tablesnoop_event(const struct tablesnoop_event *e)
 {
     if (env.filtered && !env.routes_only)
         return;
@@ -488,7 +488,7 @@ static void print_fib_event(const struct fib_event *e)
     printf("\n");
 }
 
-static void print_rule_event(const struct fib_event *e)
+static void print_rule_event(const struct tablesnoop_event *e)
 {
     if (env.filtered && !env.rules_only)
         return;
@@ -526,7 +526,7 @@ static void print_rule_event(const struct fib_event *e)
     printf("\n");
 }
 
-static void print_srv6_event(const struct fib_event *e)
+static void print_srv6_event(const struct tablesnoop_event *e)
 {
     if (!e->success && !env.show_lookup_fails)
         return;
@@ -537,18 +537,18 @@ static void print_srv6_event(const struct fib_event *e)
     printf("\n");
 }
 
-static int fib_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
+static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
 {
-    if (data_sz != sizeof(struct fib_event)) {
+    if (data_sz != sizeof(struct tablesnoop_event)) {
         fprintf(stderr, RED "Error: malformed event from kernel. BPF objects out-of-date?\n" RESET);
         env.exiting = true;
     }
 
-    const struct fib_event *e = data;
+    const struct tablesnoop_event *e = data;
 
     switch (e->type) {
     case FIB_V4:
-    case FIB_V6: print_fib_event(e);
+    case FIB_V6: print_tablesnoop_event(e);
         break;
     case RULE_V4:
     case RULE_V6: print_rule_event(e);
@@ -632,7 +632,7 @@ int main(int argc, char *argv[])
 
     env.netns_cache = create_netns_cache();
     if (env.verbose)
-        printf("Event size: %lu bytes\n", sizeof(struct fib_event));
+        printf("Event size: %lu bytes\n", sizeof(struct tablesnoop_event));
 
     if (force_rule_lookups() == false) {
         ret = EXIT_FAILURE;
@@ -663,7 +663,7 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    rb = ring_buffer__new(bpf_map__fd(obj->maps.rb), fib_event_cb, NULL, NULL);
+    rb = ring_buffer__new(bpf_map__fd(obj->maps.rb), tablesnoop_event_cb, NULL, NULL);
 	if (!rb) {
 		ret = EXIT_FAILURE;
 		perror("Failed to create ring buffer\n");

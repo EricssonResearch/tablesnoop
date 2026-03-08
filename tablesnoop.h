@@ -159,7 +159,7 @@ struct srv6_data {
 
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
-struct fib_event {
+struct tablesnoop_event {
     enum event_type type;
     unsigned long netns;
     union {
