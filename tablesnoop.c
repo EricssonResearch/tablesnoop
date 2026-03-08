@@ -324,26 +324,107 @@ out_pid:
 
 static void color_lookup_result(const struct fib_event *e)
 {
-    if (env.show_lookup_fails) {
-        if (e->success) {
-            printf(GRN);
-        } else {
-            printf(RED);
-        }
+    if (e->success) {
+        printf(GRN);
+    } else {
+        printf(RED);
     }
 }
 
-static inline const char *srv6_actid_to_name(int action_id);
-static void print_nexthop(const struct nexthop_data *nh)
+static int print_ip46(const char *name, int family, const union ip46addr *addr)
 {
-    const char *fmt_nh = MAG "--> " RESET "gw: " GRN "%s " RESET "egress: %s";
-    char gw[INET6_ADDRSTRLEN] = { 0 };
+    char buf[INET6_ADDRSTRLEN] = {0};
+    const char *col = RED;
+    if (family == AF_INET) {
+        inet_ntop(AF_INET, addr, buf, INET_ADDRSTRLEN);
+        col = MAG;
+    } else if (family == AF_INET6) {
+        inet_ntop(AF_INET6, addr, buf, INET6_ADDRSTRLEN);
+        col = BLU;
+    } else {
+        snprintf(buf, sizeof(buf), "unknown family %d", family);
+    }
+    return printf("%s %s%s" RESET, name, col, buf);
+}
 
-    if (nh->family == AF_INET)
-        inet_ntop(AF_INET, &nh->v4.gw, gw, INET_ADDRSTRLEN);
-    else if (nh->family == AF_INET6)
-        inet_ntop(AF_INET6, nh->v6.gw, gw, INET6_ADDRSTRLEN);
-    printf(fmt_nh, gw, nh->egress);
+static inline const char *srv6_actid_to_name(int action_id)
+{
+    const char *action_names[SEG6_LOCAL_ACTION_MAX + 1] = {
+        [SEG6_LOCAL_ACTION_UNSPEC] = "unspecified",
+        [SEG6_LOCAL_ACTION_END] = "End",
+        [SEG6_LOCAL_ACTION_END_X] = "End.X",
+        [SEG6_LOCAL_ACTION_END_T] = "End.T",
+        [SEG6_LOCAL_ACTION_END_DX2] = "End.DX2",
+        [SEG6_LOCAL_ACTION_END_DX6] = "End.DX6",
+        [SEG6_LOCAL_ACTION_END_DX4] = "End.DX4",
+        [SEG6_LOCAL_ACTION_END_DT6] = "End.DT6",
+        [SEG6_LOCAL_ACTION_END_DT4] = "End.DT4",
+        [SEG6_LOCAL_ACTION_END_B6] = "End.B6",
+        [SEG6_LOCAL_ACTION_END_B6_ENCAP] = "End.B6.Encap",
+        [SEG6_LOCAL_ACTION_END_BM] = "End.BM",
+        [SEG6_LOCAL_ACTION_END_S] = "End.S",
+        [SEG6_LOCAL_ACTION_END_AS] = "End.AS",
+        [SEG6_LOCAL_ACTION_END_AM] = "End.AM",
+        [SEG6_LOCAL_ACTION_END_BPF] = "End.BPF",
+        [SEG6_LOCAL_ACTION_END_DT46] = "End.DT46",
+    };
+
+    if (action_id > SEG6_LOCAL_ACTION_MAX)
+        return "invalid";
+
+    return action_names[action_id];
+}
+
+// copied from include/vdso/bits.h and include/uapi/linux/const.h
+#define __AC(X,Y)               (X##Y)
+#define _AC(X,Y)                __AC(X,Y)
+#define UL(x)                   (_AC(x, UL))
+#define BIT(nr)                 (UL(1) << (nr))
+// copied from net/ipv6/seg6_local.c
+// the enum containing SEG6_LOCAL_FLV_OP_PSP is in include/uapi/linux/seg6_local.h
+#define SEG6_F_LOCAL_FLV_OP(flvname)    BIT(SEG6_LOCAL_FLV_OP_##flvname)
+#define SEG6_F_LOCAL_FLV_NEXT_CSID      SEG6_F_LOCAL_FLV_OP(NEXT_CSID)
+#define SEG6_F_LOCAL_FLV_PSP            SEG6_F_LOCAL_FLV_OP(PSP)
+
+static void print_seg6local(unsigned long netns, int seg6action, const struct seg6local_data *s6l)
+{
+    printf("action " YEL "%s" RESET, srv6_actid_to_name(seg6action));
+
+    if (seg6action == SEG6_LOCAL_ACTION_END_T ||
+            seg6action == SEG6_LOCAL_ACTION_END_DT6) {
+        printf(" table " YEL "%d", s6l->table);
+    }
+    if (seg6action == SEG6_LOCAL_ACTION_END_DT4 ||
+            seg6action == SEG6_LOCAL_ACTION_END_DT46) {
+        printf(" vrf table " YEL "%d", s6l->vrf_table);
+    }
+    if (seg6action == SEG6_LOCAL_ACTION_END_DX4) {
+        print_ip46(" nh4", AF_INET, (void*)&s6l->nh4);
+    }
+    if (seg6action == SEG6_LOCAL_ACTION_END_DX6) {
+        print_ip46(" nh6", AF_INET6, (void*)&s6l->nh6);
+    }
+    if (s6l->oif) {
+        char oifstr[IFNAMSIZ];
+        if_netns_indextoname(oifstr, netns, s6l->oif);
+        printf(" oif " CYN "%s" RESET, oifstr);
+    }
+
+    if (s6l->flavor_ops & SEG6_F_LOCAL_FLV_PSP) {
+        printf(" flavor " YEL "PSP" RESET);
+    }
+    if (s6l->flavor_ops & SEG6_F_LOCAL_FLV_NEXT_CSID) {
+        printf(" flavor " YEL "NEXT-CSID" RESET " loc " YEL "%d" RESET " func " YEL "%d" RESET,
+                s6l->csid_loc_bits, s6l->csid_func_bits);
+    }
+}
+
+static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
+{
+    printf(BLD "-->" RESET);
+    if (nh->gw_family != AF_UNSPEC)
+        print_ip46(" gw", nh->gw_family, &nh->gw);
+    printf(" egress " CYN "%s" RESET, nh->egress);
 
     if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6) {
         const char *seg6_mode = "unknown";
@@ -351,21 +432,20 @@ static void print_nexthop(const struct nexthop_data *nh)
             case SEG6_IPTUN_MODE_INLINE: seg6_mode = "inline"; break;
             case SEG6_IPTUN_MODE_ENCAP: seg6_mode = "encap"; break;
             case SEG6_IPTUN_MODE_L2ENCAP: seg6_mode = "l2encap"; break;
-            case SEG6_IPTUN_MODE_ENCAP_RED: seg6_mode = "encap_red"; break;
-            case SEG6_IPTUN_MODE_L2ENCAP_RED: seg6_mode = "l2encap_red"; break;
+            case SEG6_IPTUN_MODE_ENCAP_RED: seg6_mode = "encap.red"; break;
+            case SEG6_IPTUN_MODE_L2ENCAP_RED: seg6_mode = "l2encap.red"; break;
         }
 
-        printf(" SEG6 mode " YEL "%s" RESET " SRH type " YEL "%u" RESET " segments_left %u first_segment %u [", seg6_mode,
+        printf(" " BLD "SEG6" RESET " mode " YEL "%s" RESET " SRH type " YEL "%u" RESET " segments_left %u first_segment %u [", seg6_mode,
                 nh->lwt_seg6_hdr.type, nh->lwt_seg6_hdr.segments_left, nh->lwt_seg6_hdr.first_segment);
         for (unsigned i=0; i<=nh->lwt_seg6_hdr.segments_left; i++) {
-            char seg[INET6_ADDRSTRLEN] = { 0 };
-            inet_ntop(AF_INET6, &nh->lwt_seg6_hdr.segments[i], seg, INET6_ADDRSTRLEN);
-            printf(" %s", seg);
+            print_ip46("", AF_INET6, (void*)&nh->lwt_seg6_hdr.segments[i]);
         }
         printf("]");
     }
     else if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
-        printf(" SEG6Local action " YEL "%s" RESET " table %d", srv6_actid_to_name(nh->lwt_seg6_mode), nh->lwt_seg6local_table);
+        printf(" " BLD "SEG6local" RESET " ");
+        print_seg6local(netns, nh->lwt_seg6_mode, &nh->lwt_seg6local_data);
     }
 }
 
@@ -410,7 +490,7 @@ static void print_fib_event(const struct fib_event *e)
     }
 
     if (e->success)
-        print_nexthop(&e->fib.nh);
+        print_nexthop(e->netns, &e->fib.nh);
     printf("\n");
 }
 
@@ -466,55 +546,14 @@ static void print_rule_event(const struct fib_event *e)
     printf("\n");
 }
 
-static inline const char *srv6_actid_to_name(int action_id)
-{
-    const char *action_names[SEG6_LOCAL_ACTION_MAX + 1] = {
-        [SEG6_LOCAL_ACTION_UNSPEC] = "unspecified",
-        [SEG6_LOCAL_ACTION_END] = "End",
-        [SEG6_LOCAL_ACTION_END_X] = "End.X",
-        [SEG6_LOCAL_ACTION_END_T] = "End.T",
-        [SEG6_LOCAL_ACTION_END_DX2] = "End.DX2",
-        [SEG6_LOCAL_ACTION_END_DX6] = "End.DX6",
-        [SEG6_LOCAL_ACTION_END_DX4] = "End.DX4",
-        [SEG6_LOCAL_ACTION_END_DT6] = "End.DT6",
-        [SEG6_LOCAL_ACTION_END_DT4] = "End.DT4",
-        [SEG6_LOCAL_ACTION_END_B6] = "End.B6",
-        [SEG6_LOCAL_ACTION_END_B6_ENCAP] = "End.B6.Encap",
-        [SEG6_LOCAL_ACTION_END_BM] = "End.BM",
-        [SEG6_LOCAL_ACTION_END_S] = "End.S",
-        [SEG6_LOCAL_ACTION_END_AS] = "End.AS",
-        [SEG6_LOCAL_ACTION_END_AM] = "End.AM",
-        [SEG6_LOCAL_ACTION_END_BPF] = "End.BPF",
-        [SEG6_LOCAL_ACTION_END_DT46] = "End.DT46",
-    };
-
-    if (action_id > SEG6_LOCAL_ACTION_MAX)
-        return "invalid";
-
-    return action_names[action_id];
-}
-
 static void print_srv6_event(const struct fib_event *e)
 {
-    const char *fmt_srv6 = "srv6:" RESET " iif: %s oif: %s table id: %d vrf table: %d action: " YEL "%s" RESET;
-    printf("netns: %lu ", e->netns);
-    char iifstr[IFNAMSIZ];
-    char oifstr[IFNAMSIZ];
-    char nh[INET6_ADDRSTRLEN] = { 0 };
-
     if (!e->success && !env.show_lookup_fails)
         return;
 
-    // if (env.verbose) {
-    if_netns_indextoname(iifstr, e->netns, e->srv6.iif);
-    if_netns_indextoname(oifstr, e->netns, e->srv6.oif);
-    // }
     color_lookup_result(e);
-    printf(fmt_srv6, iifstr, oifstr, e->srv6.table, e->srv6.vrf_table, srv6_actid_to_name(e->srv6.action));
-    inet_ntop(AF_INET, &e->srv6.nh4, nh, INET_ADDRSTRLEN);
-    printf(" nh4 " MAG "%s" RESET, nh);
-    inet_ntop(AF_INET6, &e->srv6.nh6, nh, INET6_ADDRSTRLEN);
-    printf(" nh6 " BLU "%s" RESET, nh);
+    printf("srv6:" RESET " netns %lu ", e->netns);
+    print_seg6local(e->netns, e->srv6.action, &e->srv6.seg6local);
     printf("\n");
 }
 

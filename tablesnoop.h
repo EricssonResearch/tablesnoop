@@ -7,6 +7,10 @@
 #define IFNAMSIZ    16
 #endif
 
+#ifndef AF_UNSPEC
+#define AF_UNSPEC   0
+#endif
+
 #ifndef AF_INET
 #define AF_INET     2   /* Internet IPv4 Protocol 	*/
 #endif
@@ -22,6 +26,7 @@
 
 // For console output coloring
 // source: https://stackoverflow.com/a/23657072/3945980
+#define BLD   "\x1B[1m"
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
 #define YEL   "\x1B[33m"
@@ -64,6 +69,11 @@ enum event_type {
     RULE_V4,
     RULE_V6,
     SRV6_END,
+};
+
+union ip46addr {
+    struct in_addr ip4;
+    struct in6_addr ip6;
 };
 
 struct rule_data {
@@ -115,24 +125,28 @@ struct my_ipv6_sr_hdr {
         struct in6_addr segments[SRH_MAX_HOPS]; // this is [] in the original
 };
 
+// we don't need most of the stuff in struct seg6_local_lwt
+struct seg6local_data {
+    int table; // End.T
+    struct in_addr nh4; // End.DX4
+    struct in6_addr nh6; // End.DX6
+    int oif; // End.X
+    int vrf_table; // End.DT4 and End.DT46
+    int flavor_ops; // PSP and CSID
+    char csid_loc_bits;
+    char csid_func_bits;
+};
+
 struct nexthop_data {
-    bool invalid;
     char egress[IFNAMSIZ];
-    int family;
+    int gw_family;
+    union ip46addr gw;
 
     unsigned short lwt_type;
-    int lwt_seg6_mode; // also for seg6_local
-    int lwt_seg6local_table;
-    //TODO nh4 nh6
-    struct my_ipv6_sr_hdr lwt_seg6_hdr;
-
+    int lwt_seg6_mode; // SEG6_IPTUN_MODE_XXX or SEG6_LOCAL_ACTION_XXX
     union {
-        struct {
-            unsigned int gw;
-        } v4;
-        struct {
-            char gw[16];
-        } v6;
+        struct my_ipv6_sr_hdr lwt_seg6_hdr;
+        struct seg6local_data lwt_seg6local_data;
     };
 };
 
@@ -159,16 +173,7 @@ struct fib_data {
 
 struct srv6_data {
     int action;
-    int table;
-    int vrf_table; // End.DT4 and End.DT46
-    int iif; //TODO seg6_local doesn't use this at all
-    int oif; //TODO seg6_local only uses this in End.X
-    struct in_addr nh4;
-    struct in6_addr nh6;
-    struct {
-        unsigned char loclen;
-        unsigned char funclen;
-    } csid;
+    struct seg6local_data seg6local;
 };
 
 // structure for kernelspace -> userspace messaging

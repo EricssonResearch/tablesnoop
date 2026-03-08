@@ -56,40 +56,40 @@ static inline bool is_dscp_full_supported()
     return false;
 }
 
-static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh_common *nhc, enum event_type type)
+static void construct_seg6local_data(struct seg6local_data *seg6l, const struct seg6_local_lwt *slwt)
+{
+    seg6l->table = slwt->table;
+    seg6l->nh4 = slwt->nh4;
+    seg6l->nh6 = slwt->nh6;
+    seg6l->oif = slwt->oif;
+    seg6l->vrf_table = slwt->dt_info.vrf_table;
+    seg6l->flavor_ops = slwt->flv_info.flv_ops;
+    seg6l->csid_loc_bits = slwt->flv_info.lcblock_bits;
+    seg6l->csid_func_bits = slwt->flv_info.lcnode_func_bits;
+}
+
+static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh_common *nhc)
 {
     struct in6_addr *in6 = NULL;
     struct in_addr *in4 = NULL;
-    void *gw = NULL;
 
-    if (type == FIB_V4) {
-        gw = &nhd->v4.gw;
-    }
-    else if (type == FIB_V6) {
-        gw = &nhd->v6.gw;
-    } else {
-        nhd->invalid = true;
-        return;
-    }
-
+    //TODO dev is the device the fib entry is bound to, egress is nhc->nhc_oif
     struct net_device *dev = nhc->nhc_dev;
     if (dev)
         __builtin_memcpy(&nhd->egress, dev->name, sizeof(nhd->egress));
 
     if (nhc->nhc_gw_family == AF_INET) {
         // bpf_printk("v4 gw: %pI4", &nhc->nhc_gw.ipv4);
-        nhd->family = AF_INET;
-        __builtin_memcpy(gw, &nhc->nhc_gw.ipv4, sizeof(struct in_addr));
-    } else if (type == FIB_V6 || nhc->nhc_gw_family == AF_INET6) {
+        nhd->gw_family = AF_INET;
+        __builtin_memcpy(&nhd->gw, &nhc->nhc_gw.ipv4, sizeof(struct in_addr));
+    } else if (nhc->nhc_gw_family == AF_INET6) {
         // bpf_printk("v6 gw: %pI6", &nhc->nhc_gw.ipv6);
-        nhd->family = AF_INET6;
-        __builtin_memcpy(gw, &nhc->nhc_gw.ipv6, sizeof(struct in6_addr));
+        nhd->gw_family = AF_INET6;
+        __builtin_memcpy(&nhd->gw, &nhc->nhc_gw.ipv6, sizeof(struct in6_addr));
     } else {
-        nhd->invalid = true;
-        return;
+        nhd->gw_family = AF_UNSPEC;
     }
 
-    nhd->lwt_type = 0;
     if (nhc->nhc_lwtstate) {
         nhd->lwt_type = nhc->nhc_lwtstate->type;
         if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_SEG6) {
@@ -108,11 +108,12 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
             struct seg6_local_lwt *slwt = (struct seg6_local_lwt *)nhc->nhc_lwtstate->data;
 
             nhd->lwt_seg6_mode = slwt->action;
-            nhd->lwt_seg6local_table = slwt->table;
+            construct_seg6local_data(&nhd->lwt_seg6local_data, slwt);
         }
+    } else {
+        nhd->lwt_type = 0;
     }
 }
-
 
 static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb, const struct flowi4 *flp,
     const struct fib_result *res, int fib_flags, unsigned long netns, int ret)
@@ -141,7 +142,7 @@ static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb
     in = (struct in_addr *) &e->fib.v4.src;
     in->s_addr = flp->saddr;
 
-    construct_nexthop_data(&e->fib.nh, res->nhc, e->type);
+    construct_nexthop_data(&e->fib.nh, res->nhc);
 }
 
 
@@ -167,7 +168,7 @@ static void construct_fib6_event(struct fib_event *e, struct net *net, struct fi
     *in6 = fl6->saddr;
     e->fib.v6.flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
 
-    construct_nexthop_data(&e->fib.nh, &res->nh->nh_common, e->type);
+    construct_nexthop_data(&e->fib.nh, &res->nh->nh_common);
 }
 
 
@@ -332,33 +333,6 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
     return BPF_OK;
 }
 
-/*struct seg6_local_lwt {
-	int action;
-	struct ipv6_sr_hdr *srh;
-	int table;
-	struct in_addr nh4;
-	struct in6_addr nh6;
-	int iif;
-	int oif;
-	struct bpf_lwt_prog bpf;
-	struct seg6_end_dt_info dt_info;
-	struct seg6_flavors_info flv_info;
-	struct pcpu_seg6_local_counters __percpu *pcpu_counters;
-	int headroom;
-	struct seg6_action_desc *desc;
-	unsigned long parsed_optattrs;
-};
-
-struct seg6_action_desc {
-	int action;
-	unsigned long attrs;
-	unsigned long optattrs;
-	int (*input)(struct sk_buff *skb, struct seg6_local_lwt *slwt);
-	int static_headroom;
-	struct seg6_local_lwtunnel_ops slwt_ops;
-};*/
-
-
 static void construct_srv6_event(struct fib_event *e, const struct seg6_local_lwt *srv6_lwt)
 {
     const struct seg6_action_desc *desc = srv6_lwt->desc;
@@ -367,13 +341,7 @@ static void construct_srv6_event(struct fib_event *e, const struct seg6_local_lw
 
     e->type = SRV6_END;
     e->srv6.action = srv6_lwt->action;
-    e->srv6.table = srv6_lwt->table;
-    e->srv6.vrf_table = srv6_lwt->dt_info.vrf_table;
-    e->srv6.iif = srv6_lwt->iif;
-    e->srv6.oif = srv6_lwt->oif;
-    e->srv6.nh4 = srv6_lwt->nh4;
-    e->srv6.nh6 = srv6_lwt->nh6;
-    //TODO flv_info for CSID?
+    construct_seg6local_data(&e->srv6.seg6local, srv6_lwt);
 }
 
 static inline int probe_input_action(struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
