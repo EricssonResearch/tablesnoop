@@ -98,17 +98,8 @@ struct rule_data {
     unsigned char dscp;
     char iifname[IFNAMSIZ];
     char oifname[IFNAMSIZ];
-    union {
-        struct {
-            unsigned dst;
-            unsigned src;
-        } v4;
-        struct {
-            // unsigned flowlabel; //Linux v6.14
-            char dst[16];
-            char src[16];
-        } v6;
-    };
+    union ip46addr src; // version is from event_type
+    union ip46addr dst; // version is from event_type
 };
 
 #define SRH_MAX_HOPS 10
@@ -156,19 +147,9 @@ struct fib_data {
     unsigned int oif;
     unsigned int iif;
     unsigned char dscp;
-    unsigned short sport;
-    unsigned short dport;
-    union {
-        struct {
-            unsigned int src;
-            unsigned int dst;
-        } v4;
-        struct {
-            unsigned int flowlabel;
-            unsigned char src[16];
-            unsigned char dst[16];
-        } v6;
-    };
+    unsigned int flowlabel; // only for v6
+    union ip46addr src; // version is from event_type
+    union ip46addr dst; // version is from event_type
 };
 
 struct srv6_data {

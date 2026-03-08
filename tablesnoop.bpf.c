@@ -132,15 +132,8 @@ static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb
         e->fib.dscp = flp->__fl_common.flowic_dscp >> 2;
     }
 
-    if (flp->__fl_common.flowic_proto == IPPROTO_TCP || flp->__fl_common.flowic_proto == IPPROTO_UDP) {
-        e->fib.dport = bpf_ntohs(flp->uli.ports.dport);
-        e->fib.sport = bpf_ntohs(flp->uli.ports.sport);
-    }
-
-    in = (struct in_addr *) &e->fib.v4.dst;
-    in->s_addr = flp->daddr;
-    in = (struct in_addr *) &e->fib.v4.src;
-    in->s_addr = flp->saddr;
+    e->fib.dst.ip4.s_addr = flp->daddr;
+    e->fib.src.ip4.s_addr = flp->saddr;
 
     construct_nexthop_data(&e->fib.nh, res->nhc);
 }
@@ -156,17 +149,10 @@ static void construct_fib6_event(struct fib_event *e, struct net *net, struct fi
     e->fib.oif = fl6->__fl_common.flowic_oif;
     e->fib.iif = fl6->__fl_common.flowic_iif;
     e->fib.dscp = (unsigned char) (bpf_ntohl(fl6->flowlabel & IPV6_TCLASS_MASK) >> (IPV6_TCLASS_SHIFT + 2));
-    if (fl6->__fl_common.flowic_proto == IPPROTO_TCP ||
-        fl6->__fl_common.flowic_proto == IPPROTO_UDP) {
-        e->fib.dport = bpf_ntohs(fl6->uli.ports.dport);
-        e->fib.sport = bpf_ntohs(fl6->uli.ports.sport);
-    }
 
-    in6 = (struct in6_addr *) &e->fib.v6.dst;
-    *in6 = fl6->daddr;
-    in6 = (struct in6_addr *) &e->fib.v6.src;
-    *in6 = fl6->saddr;
-    e->fib.v6.flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
+    e->fib.dst.ip6 = fl6->daddr;
+    e->fib.src.ip6 = fl6->saddr;
+    e->fib.flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
 
     construct_nexthop_data(&e->fib.nh, &res->nh->nh_common);
 }
@@ -205,9 +191,9 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
         e->type = RULE_V4;
 
         if (rule4->dst_len && (e->rule.has_dstaddr = true))
-            e->rule.v4.dst = rule4->dst;
+            e->rule.dst.ip4.s_addr = rule4->dst;
         if (rule4->src_len && (e->rule.has_srcaddr = true))
-            e->rule.v4.src = rule4->src;
+            e->rule.src.ip4.s_addr = rule4->src;
         if (rule4->dscp && (e->rule.has_dscp = true)) {
             if (is_dscp_full_supported()) {
                 if (dscp_full4)
@@ -232,9 +218,9 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
         // bpf_printk("table: %d", rule6->common.table);
 
         if (rule6->dst.plen && (e->rule.has_dstaddr = true))
-            __builtin_memcpy(e->rule.v6.dst, &rule6->dst.addr, sizeof(struct in6_addr));
+            e->rule.dst.ip6 = rule6->dst.addr;
         if (rule6->src.plen && (e->rule.has_srcaddr = true))
-            __builtin_memcpy(e->rule.v6.src, &rule6->src.addr, sizeof(struct in6_addr));
+            e->rule.src.ip6 = rule6->src.addr;
         if (rule6->dscp && (e->rule.has_dscp = true)) {
             if (is_dscp_full_supported()) {
                 if (dscp_full6)
