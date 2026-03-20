@@ -388,15 +388,15 @@ static inline const char *srv6_actid_to_name(int action_id)
 
 static void print_seg6local(unsigned long netns, int seg6action, const struct seg6local_data *s6l)
 {
-    printf("action " YEL "%s" RESET, srv6_actid_to_name(seg6action));
+    printf(" action " YEL "%s" RESET, srv6_actid_to_name(seg6action));
 
     if (seg6action == SEG6_LOCAL_ACTION_END_T ||
             seg6action == SEG6_LOCAL_ACTION_END_DT6) {
-        printf(" table " YEL "%d", s6l->table);
+        printf(" table " YEL "%d" RESET, s6l->table);
     }
     if (seg6action == SEG6_LOCAL_ACTION_END_DT4 ||
             seg6action == SEG6_LOCAL_ACTION_END_DT46) {
-        printf(" vrf table " YEL "%d", s6l->vrf_table);
+        printf(" vrf_table " YEL "%d" RESET, s6l->vrf_table);
     }
     if (seg6action == SEG6_LOCAL_ACTION_END_DX4) {
         print_ip46(" nh4", AF_INET, (void*)&s6l->nh4);
@@ -421,10 +421,18 @@ static void print_seg6local(unsigned long netns, int seg6action, const struct se
 
 static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
 {
-    printf(BLD " -->" RESET);
+    printf(" " BLD "-->" RESET);
     if (nh->gw_family != AF_UNSPEC)
         print_ip46(" gw", nh->gw_family, &nh->gw);
-    printf(" egress " CYN "%s" RESET, nh->egress);
+    printf(" dev " CYN "%s" RESET, nh->egress);
+
+    if (nh->lwt_type == LWTUNNEL_ENCAP_NONE)
+        return;
+
+    const char *lwt_names[] = {
+        "NONE", "MPLS", "IP", "ILA", "IP6", "SEG6", "BPF", "SEG6_LOCAL", "RPL", "IOAM6", "XFRM"
+    };
+    printf(" " BLD "%s" RESET, lwt_names[nh->lwt_type]);
 
     if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6) {
         const char *seg6_mode = "unknown";
@@ -436,7 +444,7 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
             case SEG6_IPTUN_MODE_L2ENCAP_RED: seg6_mode = "l2encap.red"; break;
         }
 
-        printf(" " BLD "SEG6" RESET " mode " YEL "%s" RESET " SRH type " YEL "%u" RESET " segments_left %u first_segment %u [", seg6_mode,
+        printf(" mode " YEL "%s" RESET " SRH type " YEL "%u" RESET " segments_left %u first_segment %u [", seg6_mode,
                 nh->lwt_seg6_hdr.type, nh->lwt_seg6_hdr.segments_left, nh->lwt_seg6_hdr.first_segment);
         for (unsigned i=0; i<=nh->lwt_seg6_hdr.segments_left; i++) {
             print_ip46("", AF_INET6, (void*)&nh->lwt_seg6_hdr.segments[i]);
@@ -444,7 +452,6 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
         printf("]");
     }
     else if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
-        printf(" " BLD "SEG6local" RESET " ");
         print_seg6local(netns, nh->lwt_seg6_mode, &nh->lwt_seg6local_data);
     }
 }
