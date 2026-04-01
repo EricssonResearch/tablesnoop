@@ -7,6 +7,10 @@
 #define IFNAMSIZ    16
 #endif
 
+#ifndef AF_UNSPEC
+#define AF_UNSPEC   0
+#endif
+
 #ifndef AF_INET
 #define AF_INET     2   /* Internet IPv4 Protocol 	*/
 #endif
@@ -22,6 +26,7 @@
 
 // For console output coloring
 // source: https://stackoverflow.com/a/23657072/3945980
+#define BLD   "\x1B[1m"
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
 #define YEL   "\x1B[33m"
@@ -66,6 +71,11 @@ enum event_type {
     SRV6_END,
 };
 
+union ip46addr {
+    struct in_addr ip4;
+    struct in6_addr ip6;
+};
+
 struct rule_data {
     bool invalid : 1;
     bool has_pref : 1;
@@ -88,17 +98,8 @@ struct rule_data {
     unsigned char dscp;
     char iifname[IFNAMSIZ];
     char oifname[IFNAMSIZ];
-    union {
-        struct {
-            unsigned dst;
-            unsigned src;
-        } v4;
-        struct {
-            // unsigned flowlabel; //Linux v6.14
-            char dst[16];
-            char src[16];
-        } v6;
-    };
+    union ip46addr src; // version is from event_type
+    union ip46addr dst; // version is from event_type
 };
 
 #define SRH_MAX_HOPS 10
@@ -115,22 +116,28 @@ struct my_ipv6_sr_hdr {
         struct in6_addr segments[SRH_MAX_HOPS]; // this is [] in the original
 };
 
+// we don't need most of the stuff in struct seg6_local_lwt
+struct seg6local_data {
+    int table; // End.T
+    struct in_addr nh4; // End.DX4
+    struct in6_addr nh6; // End.DX6
+    int oif; // End.X
+    int vrf_table; // End.DT4 and End.DT46
+    int flavor_ops; // PSP and CSID
+    char csid_loc_bits;
+    char csid_func_bits;
+};
+
 struct nexthop_data {
-    bool invalid;
     char egress[IFNAMSIZ];
-    int family;
+    int gw_family;
+    union ip46addr gw;
 
     unsigned short lwt_type;
-    int lwt_seg6_mode;
-    struct my_ipv6_sr_hdr lwt_seg6_hdr;
-
+    int lwt_seg6_mode; // SEG6_IPTUN_MODE_XXX or SEG6_LOCAL_ACTION_XXX
     union {
-        struct {
-            unsigned int gw;
-        } v4;
-        struct {
-            char gw[16];
-        } v6;
+        struct my_ipv6_sr_hdr lwt_seg6_hdr;
+        struct seg6local_data lwt_seg6local_data;
     };
 };
 
@@ -140,35 +147,19 @@ struct fib_data {
     unsigned int oif;
     unsigned int iif;
     unsigned char dscp;
-    unsigned short sport;
-    unsigned short dport;
-    union {
-        struct {
-            unsigned int src;
-            unsigned int dst;
-        } v4;
-        struct {
-            unsigned int flowlabel;
-            unsigned char src[16];
-            unsigned char dst[16];
-        } v6;
-    };
+    unsigned int flowlabel; // only for v6
+    union ip46addr src; // version is from event_type
+    union ip46addr dst; // version is from event_type
 };
 
 struct srv6_data {
     int action;
-    int table;
-    int iif;
-    int oif;
-    struct {
-        unsigned char loclen;
-        unsigned char funclen;
-    } csid;
+    struct seg6local_data seg6local;
 };
 
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
-struct fib_event {
+struct tablesnoop_event {
     enum event_type type;
     unsigned long netns;
     union {

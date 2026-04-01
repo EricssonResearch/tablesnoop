@@ -56,46 +56,46 @@ static inline bool is_dscp_full_supported()
     return false;
 }
 
-static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh_common *nhc, enum event_type type)
+static void construct_seg6local_data(struct seg6local_data *seg6l, const struct seg6_local_lwt *slwt)
+{
+    seg6l->table = slwt->table;
+    seg6l->nh4 = slwt->nh4;
+    seg6l->nh6 = slwt->nh6;
+    seg6l->oif = slwt->oif;
+    seg6l->vrf_table = slwt->dt_info.vrf_table;
+    seg6l->flavor_ops = slwt->flv_info.flv_ops;
+    seg6l->csid_loc_bits = slwt->flv_info.lcblock_bits;
+    seg6l->csid_func_bits = slwt->flv_info.lcnode_func_bits;
+}
+
+static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh_common *nhc)
 {
     struct in6_addr *in6 = NULL;
     struct in_addr *in4 = NULL;
-    void *gw = NULL;
 
-    if (type == FIB_V4) {
-        gw = &nhd->v4.gw;
-    }
-    else if (type == FIB_V6) {
-        gw = &nhd->v6.gw;
-    } else {
-        nhd->invalid = true;
-        return;
-    }
-
+    //TODO dev is the device the fib entry is bound to, egress is nhc->nhc_oif
     struct net_device *dev = nhc->nhc_dev;
     if (dev)
         __builtin_memcpy(&nhd->egress, dev->name, sizeof(nhd->egress));
 
     if (nhc->nhc_gw_family == AF_INET) {
         // bpf_printk("v4 gw: %pI4", &nhc->nhc_gw.ipv4);
-        nhd->family = AF_INET;
-        __builtin_memcpy(gw, &nhc->nhc_gw.ipv4, sizeof(struct in_addr));
-    } else if (type == FIB_V6 || nhc->nhc_gw_family == AF_INET6) {
+        nhd->gw_family = AF_INET;
+        __builtin_memcpy(&nhd->gw, &nhc->nhc_gw.ipv4, sizeof(struct in_addr));
+    } else if (nhc->nhc_gw_family == AF_INET6) {
         // bpf_printk("v6 gw: %pI6", &nhc->nhc_gw.ipv6);
-        nhd->family = AF_INET6;
-        __builtin_memcpy(gw, &nhc->nhc_gw.ipv6, sizeof(struct in6_addr));
+        nhd->gw_family = AF_INET6;
+        __builtin_memcpy(&nhd->gw, &nhc->nhc_gw.ipv6, sizeof(struct in6_addr));
     } else {
-        nhd->invalid = true;
-        return;
+        nhd->gw_family = AF_UNSPEC;
     }
 
-    nhd->lwt_type = 0;
     if (nhc->nhc_lwtstate) {
+        nhd->lwt_type = nhc->nhc_lwtstate->type;
         if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_SEG6) {
             struct seg6_lwt *slwt = (struct seg6_lwt *)nhc->nhc_lwtstate->data;
             struct ipv6_sr_hdr *srh = slwt->tuninfo[0].srh;
 
-            nhd->lwt_type = nhc->nhc_lwtstate->type;
             nhd->lwt_seg6_mode = slwt->tuninfo[0].mode;
 
             __builtin_memcpy(&nhd->lwt_seg6_hdr, srh, sizeof(struct ipv6_sr_hdr));
@@ -104,11 +104,18 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
                 __builtin_memcpy(&nhd->lwt_seg6_hdr.segments[i], &srh->segments[i], sizeof(struct in6_addr));
             }
         }
+        else if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
+            struct seg6_local_lwt *slwt = (struct seg6_local_lwt *)nhc->nhc_lwtstate->data;
+
+            nhd->lwt_seg6_mode = slwt->action;
+            construct_seg6local_data(&nhd->lwt_seg6local_data, slwt);
+        }
+    } else {
+        nhd->lwt_type = 0;
     }
 }
 
-
-static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb, const struct flowi4 *flp,
+static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_table *tb, const struct flowi4 *flp,
     const struct fib_result *res, int fib_flags, unsigned long netns, int ret)
 {
     struct in_addr *in;
@@ -125,21 +132,14 @@ static void construct_fib4_event(struct fib_event *e, const struct fib_table *tb
         e->fib.dscp = flp->__fl_common.flowic_dscp >> 2;
     }
 
-    if (flp->__fl_common.flowic_proto == IPPROTO_TCP || flp->__fl_common.flowic_proto == IPPROTO_UDP) {
-        e->fib.dport = bpf_ntohs(flp->uli.ports.dport);
-        e->fib.sport = bpf_ntohs(flp->uli.ports.sport);
-    }
+    e->fib.dst.ip4.s_addr = flp->daddr;
+    e->fib.src.ip4.s_addr = flp->saddr;
 
-    in = (struct in_addr *) &e->fib.v4.dst;
-    in->s_addr = flp->daddr;
-    in = (struct in_addr *) &e->fib.v4.src;
-    in->s_addr = flp->saddr;
-
-    construct_nexthop_data(&e->fib.nh, res->nhc, e->type);
+    construct_nexthop_data(&e->fib.nh, res->nhc);
 }
 
 
-static void construct_fib6_event(struct fib_event *e, struct net *net, struct fib6_table *table, int oif,
+static void construct_fib6_event(struct tablesnoop_event *e, struct net *net, struct fib6_table *table, int oif,
                                  struct flowi6 *fl6, struct fib6_result *res, int strict, int ret)
 {
     struct in6_addr *in6;
@@ -149,23 +149,16 @@ static void construct_fib6_event(struct fib_event *e, struct net *net, struct fi
     e->fib.oif = fl6->__fl_common.flowic_oif;
     e->fib.iif = fl6->__fl_common.flowic_iif;
     e->fib.dscp = (unsigned char) (bpf_ntohl(fl6->flowlabel & IPV6_TCLASS_MASK) >> (IPV6_TCLASS_SHIFT + 2));
-    if (fl6->__fl_common.flowic_proto == IPPROTO_TCP ||
-        fl6->__fl_common.flowic_proto == IPPROTO_UDP) {
-        e->fib.dport = bpf_ntohs(fl6->uli.ports.dport);
-        e->fib.sport = bpf_ntohs(fl6->uli.ports.sport);
-    }
 
-    in6 = (struct in6_addr *) &e->fib.v6.dst;
-    *in6 = fl6->daddr;
-    in6 = (struct in6_addr *) &e->fib.v6.src;
-    *in6 = fl6->saddr;
-    e->fib.v6.flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
+    e->fib.dst.ip6 = fl6->daddr;
+    e->fib.src.ip6 = fl6->saddr;
+    e->fib.flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
 
-    construct_nexthop_data(&e->fib.nh, &res->nh->nh_common, e->type);
+    construct_nexthop_data(&e->fib.nh, &res->nh->nh_common);
 }
 
 
-static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule *rule,
+static void construct_fib_rule_event(struct tablesnoop_event *e, const struct fib_rule *rule,
                                      const struct fib_rules_ops *ops)
 {
     e->rule.table = rule->table;
@@ -198,9 +191,9 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
         e->type = RULE_V4;
 
         if (rule4->dst_len && (e->rule.has_dstaddr = true))
-            e->rule.v4.dst = rule4->dst;
+            e->rule.dst.ip4.s_addr = rule4->dst;
         if (rule4->src_len && (e->rule.has_srcaddr = true))
-            e->rule.v4.src = rule4->src;
+            e->rule.src.ip4.s_addr = rule4->src;
         if (rule4->dscp && (e->rule.has_dscp = true)) {
             if (is_dscp_full_supported()) {
                 if (dscp_full4)
@@ -225,9 +218,9 @@ static void construct_fib_rule_event(struct fib_event *e, const struct fib_rule 
         // bpf_printk("table: %d", rule6->common.table);
 
         if (rule6->dst.plen && (e->rule.has_dstaddr = true))
-            __builtin_memcpy(e->rule.v6.dst, &rule6->dst.addr, sizeof(struct in6_addr));
+            e->rule.dst.ip6 = rule6->dst.addr;
         if (rule6->src.plen && (e->rule.has_srcaddr = true))
-            __builtin_memcpy(e->rule.v6.src, &rule6->src.addr, sizeof(struct in6_addr));
+            e->rule.src.ip6 = rule6->src.addr;
         if (rule6->dscp && (e->rule.has_dscp = true)) {
             if (is_dscp_full_supported()) {
                 if (dscp_full6)
@@ -261,7 +254,7 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
         return BPF_OK;
     // bpf_printk("fib4 lookup %d", ret);
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -283,7 +276,7 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
         return BPF_OK;
     // bpf_printk("fib6 lookup %d", ret);
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -315,7 +308,7 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
         (env.v6only && ops->family != AF_INET6))
         return BPF_OK;
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -326,34 +319,7 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
     return BPF_OK;
 }
 
-/*struct seg6_local_lwt {
-	int action;
-	struct ipv6_sr_hdr *srh;
-	int table;
-	struct in_addr nh4;
-	struct in6_addr nh6;
-	int iif;
-	int oif;
-	struct bpf_lwt_prog bpf;
-	struct seg6_end_dt_info dt_info;
-	struct seg6_flavors_info flv_info;
-	struct pcpu_seg6_local_counters __percpu *pcpu_counters;
-	int headroom;
-	struct seg6_action_desc *desc;
-	unsigned long parsed_optattrs;
-};
-
-struct seg6_action_desc {
-	int action;
-	unsigned long attrs;
-	unsigned long optattrs;
-	int (*input)(struct sk_buff *skb, struct seg6_local_lwt *slwt);
-	int static_headroom;
-	struct seg6_local_lwtunnel_ops slwt_ops;
-};*/
-
-
-static void construct_srv6_event(struct fib_event *e, const struct seg6_local_lwt *srv6_lwt)
+static void construct_srv6_event(struct tablesnoop_event *e, const struct seg6_local_lwt *srv6_lwt)
 {
     const struct seg6_action_desc *desc = srv6_lwt->desc;
 
@@ -361,9 +327,7 @@ static void construct_srv6_event(struct fib_event *e, const struct seg6_local_lw
 
     e->type = SRV6_END;
     e->srv6.action = srv6_lwt->action;
-    e->srv6.table = srv6_lwt->table;
-    e->srv6.iif = srv6_lwt->iif;
-    e->srv6.oif = srv6_lwt->oif;
+    construct_seg6local_data(&e->srv6.seg6local, srv6_lwt);
 }
 
 static inline int probe_input_action(struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
@@ -373,7 +337,7 @@ static inline int probe_input_action(struct sk_buff *skb, struct seg6_local_lwt 
     if (!env.global_netns && env.original_netns != net->net_cookie)
         return BPF_OK;
 
-    struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
@@ -391,36 +355,40 @@ int BPF_PROG(fexit_act_end, struct sk_buff *skb, struct seg6_local_lwt *slwt, in
     return probe_input_action(skb, slwt, ret);
 }
 
-SEC("fexit/input_action_end_dt6")
+SEC("fexit/input_action_end_dt46")
 int BPF_PROG(fexit_act_dt46, struct sk_buff *skb, struct seg6_local_lwt *slwt, int ret)
 {
     return probe_input_action(skb, slwt, ret);
 }
 
 
-// SEC("fexit/seg6_local_input_core")
-// int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
-//                                  struct sk_buff *skb, int ret)
-// {
-//     if (!env.global_netns && env.original_netns != net->net_cookie)
-//         return BPF_OK;
-//
-//     void *skbdst = (void *)(skb->_skb_refdst & SKB_DST_PTRMASK);
-//     struct dst_entry *dst = bpf_core_cast(skbdst, struct dst_entry);
-//
-// 	struct seg6_local_lwt *slwt =
-//         bpf_core_cast(dst->lwtstate, struct seg6_local_lwt);
-//
-//     struct fib_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct fib_event), 0);
-//     if (!e)
-//         return BPF_OK;
-//
-//     e->netns = net->net_cookie;
-//     construct_srv6_event(e, slwt);
-//     e->success = (ret == 0);
-//
-//     bpf_ringbuf_submit(e, 0);
-//     return BPF_OK;
-// }
+SEC("fentry/seg6_local_input_core")
+int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
+        struct sk_buff *skb)
+//SEC("fexit/seg6_local_input_core")
+//int BPF_PROG(fexit_seg6_local_input_core, struct net *net, struct sock *sk,
+//                                 struct sk_buff *skb, int ret)
+{
+    int ret = 0;
+    if (!env.global_netns && env.original_netns != net->net_cookie)
+        return BPF_OK;
+
+    void *skbdst = (void *)(skb->_skb_refdst & SKB_DST_PTRMASK);
+    struct dst_entry *dst = bpf_core_cast(skbdst, struct dst_entry);
+
+    struct seg6_local_lwt *slwt =
+        bpf_core_cast(dst->lwtstate->data, struct seg6_local_lwt);
+
+    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
+    if (!e)
+        return BPF_OK;
+
+    e->netns = net->net_cookie;
+    construct_srv6_event(e, slwt);
+    e->success = (ret == 0);
+
+    bpf_ringbuf_submit(e, 0);
+    return BPF_OK;
+}
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
