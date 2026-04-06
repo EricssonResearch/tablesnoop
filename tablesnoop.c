@@ -533,17 +533,6 @@ static void print_rule_event(const struct tablesnoop_event *e)
     printf("\n");
 }
 
-static void print_srv6_event(const struct tablesnoop_event *e)
-{
-    if (!e->success && !env.show_lookup_fails)
-        return;
-
-    color_lookup_result(e);
-    printf("srv6:" RESET " netns %lu ", e->netns);
-    print_seg6local(e->netns, e->srv6.action, &e->srv6.seg6local);
-    printf("\n");
-}
-
 static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
 {
     if (data_sz != sizeof(struct tablesnoop_event)) {
@@ -559,8 +548,6 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
         break;
     case RULE_V4:
     case RULE_V6: print_rule_event(e);
-        break;
-    case SRV6_END: print_srv6_event(e);
         break;
     default: fprintf(stderr, RED "unknown event type\n" RESET);
     }

@@ -68,7 +68,6 @@ enum event_type {
     FIB_V6,
     RULE_V4,
     RULE_V6,
-    SRV6_END,
 };
 
 union ip46addr {
@@ -152,11 +151,6 @@ struct fib_data {
     union ip46addr dst; // version is from event_type
 };
 
-struct srv6_data {
-    int action;
-    struct seg6local_data seg6local;
-};
-
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
 struct tablesnoop_event {
@@ -165,7 +159,6 @@ struct tablesnoop_event {
     union {
         struct fib_data fib;
         struct rule_data rule;
-        struct srv6_data srv6;
     };
     bool success : 1;
 };
