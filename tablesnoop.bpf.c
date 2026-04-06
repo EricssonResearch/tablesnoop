@@ -76,7 +76,7 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
     //TODO dev is the device the fib entry is bound to, egress is nhc->nhc_oif
     struct net_device *dev = nhc->nhc_dev;
     if (dev)
-        __builtin_memcpy(&nhd->egress, dev->name, sizeof(nhd->egress));
+        __builtin_memcpy(&nhd->dev, dev->name, sizeof(nhd->dev));
 
     if (nhc->nhc_gw_family == AF_INET) {
         // bpf_printk("v4 gw: %pI4", &nhc->nhc_gw.ipv4);
@@ -118,22 +118,24 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
 static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_table *tb, const struct flowi4 *flp,
     const struct fib_result *res, int fib_flags, unsigned long netns, int ret)
 {
-    struct in_addr *in;
     e->type = FIB_V4;
     e->netns = netns;
-    e->fib.table_id = tb->tb_id;
-    e->fib.oif = flp->__fl_common.flowic_oif;
-    e->fib.iif = flp->__fl_common.flowic_iif;
 
+    e->fib.fib_dst.ip4.s_addr = res->prefix;
+    e->fib.fib_prefixlen = res->prefixlen;
+    e->fib.fib_table_id = tb->tb_id;
+
+    e->fib.packet_dst.ip4.s_addr = flp->daddr;
+    e->fib.packet_src.ip4.s_addr = flp->saddr;
+    e->fib.packet_oif = flp->__fl_common.flowic_oif;
+    e->fib.packet_iif = flp->__fl_common.flowic_iif;
     struct flowi_common___pre6_18 *flowic_pre6_18  = (void*)&flp->__fl_common;
     if (bpf_core_field_exists(flowic_pre6_18->flowic_tos)) {
-        e->fib.dscp = flowic_pre6_18->flowic_tos >> 2; // TODO: DSCP is not correct?
+        e->fib.packet_dscp = flowic_pre6_18->flowic_tos >> 2; // TODO: DSCP is not correct?
     } else {
-        e->fib.dscp = flp->__fl_common.flowic_dscp >> 2;
+        e->fib.packet_dscp = flp->__fl_common.flowic_dscp >> 2;
     }
 
-    e->fib.dst.ip4.s_addr = flp->daddr;
-    e->fib.src.ip4.s_addr = flp->saddr;
 
     construct_nexthop_data(&e->fib.nh, res->nhc);
 }
@@ -142,17 +144,19 @@ static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_ta
 static void construct_fib6_event(struct tablesnoop_event *e, struct net *net, struct fib6_table *table, int oif,
                                  struct flowi6 *fl6, struct fib6_result *res, int strict, int ret)
 {
-    struct in6_addr *in6;
     e->type = FIB_V6;
     e->netns = net->net_cookie;
-    e->fib.table_id = table->tb6_id;
-    e->fib.oif = fl6->__fl_common.flowic_oif;
-    e->fib.iif = fl6->__fl_common.flowic_iif;
-    e->fib.dscp = (unsigned char) (bpf_ntohl(fl6->flowlabel & IPV6_TCLASS_MASK) >> (IPV6_TCLASS_SHIFT + 2));
 
-    e->fib.dst.ip6 = fl6->daddr;
-    e->fib.src.ip6 = fl6->saddr;
-    e->fib.flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
+    e->fib.fib_dst.ip6 = res->f6i->fib6_dst.addr;
+    e->fib.fib_prefixlen = res->f6i->fib6_dst.plen;
+    e->fib.fib_table_id = table->tb6_id;
+
+    e->fib.packet_dst.ip6 = fl6->daddr;
+    e->fib.packet_src.ip6 = fl6->saddr;
+    e->fib.packet_oif = fl6->__fl_common.flowic_oif;
+    e->fib.packet_iif = fl6->__fl_common.flowic_iif;
+    e->fib.packet_dscp = (unsigned char) (bpf_ntohl(fl6->flowlabel & IPV6_TCLASS_MASK) >> (IPV6_TCLASS_SHIFT + 2));
+    e->fib.packet_flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
 
     construct_nexthop_data(&e->fib.nh, &res->nh->nh_common);
 }

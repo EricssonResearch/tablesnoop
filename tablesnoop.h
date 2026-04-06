@@ -27,6 +27,7 @@
 // For console output coloring
 // source: https://stackoverflow.com/a/23657072/3945980
 #define BLD   "\x1B[1m"
+#define ITA   "\x1B[3m"
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
 #define YEL   "\x1B[33m"
@@ -128,7 +129,7 @@ struct seg6local_data {
 };
 
 struct nexthop_data {
-    char egress[IFNAMSIZ];
+    char dev[IFNAMSIZ]; // normally egress, for lwt it can be ingress
     int gw_family;
     union ip46addr gw;
 
@@ -141,14 +142,20 @@ struct nexthop_data {
 };
 
 struct fib_data {
+    // version is from event_type
+    union ip46addr packet_src;
+    union ip46addr packet_dst;
+    unsigned int packet_oif; //TODO this is always 0
+    unsigned int packet_iif;
+    unsigned char packet_dscp;
+    unsigned int packet_flowlabel; // only for v6
+
+    // always the same version as the packet
+    union ip46addr fib_dst;
+    unsigned char fib_prefixlen;
+    unsigned int fib_table_id;
+
     struct nexthop_data nh;
-    unsigned int table_id;
-    unsigned int oif;
-    unsigned int iif;
-    unsigned char dscp;
-    unsigned int flowlabel; // only for v6
-    union ip46addr src; // version is from event_type
-    union ip46addr dst; // version is from event_type
 };
 
 // structure for kernelspace -> userspace messaging

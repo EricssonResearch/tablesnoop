@@ -302,7 +302,7 @@ static char *if_netns_indextoname(char *ifnamebuf, unsigned long nsid, unsigned 
     }
 
     if (if_indextoname(if_index, ifnamebuf) == NULL) {
-        sprintf(ifnamebuf, "-");
+        sprintf(ifnamebuf, "<%u>", if_index);
     }
 
     if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0) {
@@ -322,13 +322,9 @@ out_pid:
     return NULL;
 }
 
-static void color_lookup_result(const struct tablesnoop_event *e)
+static const char *color_lookup_result(const struct tablesnoop_event *e)
 {
-    if (e->success) {
-        printf(GRN);
-    } else {
-        printf(RED);
-    }
+    return e->success ? GRN : RED;
 }
 
 static int print_ip46(const char *name, int family, const union ip46addr *addr)
@@ -424,7 +420,7 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
     printf(" " BLD "-->" RESET);
     if (nh->gw_family != AF_UNSPEC)
         print_ip46(" gw", nh->gw_family, &nh->gw);
-    printf(" dev " CYN "%s" RESET, nh->egress);
+    printf(" dev " CYN "%s" RESET, nh->dev);
 
     if (nh->lwt_type == LWTUNNEL_ENCAP_NONE)
         return;
@@ -467,26 +463,41 @@ static void print_tablesnoop_event(const struct tablesnoop_event *e)
     if (!e->success && !env.show_lookup_fails)
         return;
 
-    color_lookup_result(e);
     if (e->type == FIB_V4) {
-        printf("fib4:" RESET);
-        print_ip46(" src: ", AF_INET, &e->fib.src);
-        print_ip46(" dst: ", AF_INET, &e->fib.dst);
+        printf("%sfib4:" RESET " " ITA "packet" RESET, color_lookup_result(e));
+        print_ip46(" src", AF_INET, &e->fib.packet_src);
+        print_ip46(" dst", AF_INET, &e->fib.packet_dst);
         if (env.verbose) {
-            if_netns_indextoname(iifstr, e->netns, e->fib.iif);
-            if_netns_indextoname(oifstr, e->netns, e->fib.oif);
-            printf("netns: %lu iif: %s oif: %s table id: %d dscp: %u",
-                    e->netns, iifstr, oifstr, e->fib.table_id, e->fib.dscp);
+            if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
+            if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp);
+        }
+
+        if (e->success) {
+            print_ip46(" " ITA "fib" RESET " key", AF_INET, &e->fib.fib_dst);
+            printf(MAG "/%u" RESET, e->fib.fib_prefixlen);
+            if (env.verbose) {
+                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
+            }
         }
     } else {
-        printf("fib6:" RESET);
-        print_ip46(" src: ", AF_INET6, &e->fib.src);
-        print_ip46(" dst: ", AF_INET6, &e->fib.dst);
+        printf("%sfib6:" RESET " " ITA "packet" RESET, color_lookup_result(e));
+        print_ip46(" src", AF_INET6, &e->fib.packet_src);
+        print_ip46(" dst", AF_INET6, &e->fib.packet_dst);
         if (env.verbose) {
-            if_netns_indextoname(iifstr, e->netns, e->fib.iif);
-            if_netns_indextoname(oifstr, e->netns, e->fib.oif);
-            printf("netns: %lu iif: %s oif: %s table id: %d dscp: %u flowlabel: %u",
-                    e->netns, iifstr, oifstr, e->fib.table_id, e->fib.dscp, e->fib.flowlabel);
+            if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
+            if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp, e->fib.packet_flowlabel);
+        }
+
+        if (e->success) {
+            print_ip46(" " ITA "fib" RESET " key", AF_INET6, &e->fib.fib_dst);
+            printf(BLU "/%u" RESET, e->fib.fib_prefixlen);
+            if (env.verbose) {
+                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
+            }
         }
     }
 
@@ -511,8 +522,8 @@ static void print_rule_event(const struct tablesnoop_event *e)
         return;
 
 
-    color_lookup_result(e);
-    printf("rule%d:" RESET " pref: " YEL "%u" RESET " table: " YEL "%u" RESET,
+    printf("%srule%d:" RESET " pref: " YEL "%u" RESET " table: " YEL "%u" RESET,
+            color_lookup_result(e),
             e->type == RULE_V4 ? 4 : 6, rule->pref, rule->table);
     int addr_family = e->type == RULE_V4 ? AF_INET : AF_INET6;
     if (rule->has_dstaddr)
