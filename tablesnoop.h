@@ -67,8 +67,7 @@ struct netns_item {
 enum event_type {
     FIB_V4,
     FIB_V6,
-    RULE_V4,
-    RULE_V6,
+    RULE,
 };
 
 union ip46addr {
@@ -77,29 +76,23 @@ union ip46addr {
 };
 
 struct rule_data {
-    bool invalid : 1;
-    bool has_pref : 1;
-    bool has_mark : 1;
-    bool has_target : 1;
-    bool has_l3mdev : 1;
-    bool has_iifname : 1;
-    bool has_oifname : 1;
-    bool has_dstaddr : 1;
-    bool has_srcaddr : 1;
-    bool has_dscp : 1;
-    bool has_goto : 1;
+    union ip46addr packet_src; // version is family
+    union ip46addr packet_dst; // version is family
+
+    int family;
+    unsigned table;
 
     unsigned mark;
-    unsigned table;
     unsigned pref;
-    unsigned goto_target;
-    unsigned char family;
+    unsigned goto_target; //TODO this should always be 0
     unsigned char l3mdev;
     unsigned char dscp;
     char iifname[IFNAMSIZ];
     char oifname[IFNAMSIZ];
-    union ip46addr src; // version is from event_type
-    union ip46addr dst; // version is from event_type
+    union ip46addr src; // version is family
+    union ip46addr dst; // version is family
+    unsigned char src_len;
+    unsigned char dst_len;
 };
 
 #define SRH_MAX_HOPS 10

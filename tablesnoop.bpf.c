@@ -136,7 +136,6 @@ static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_ta
         e->fib.packet_dscp = flp->__fl_common.flowic_dscp >> 2;
     }
 
-
     construct_nexthop_data(&e->fib.nh, res->nhc);
 }
 
@@ -162,26 +161,36 @@ static void construct_fib6_event(struct tablesnoop_event *e, struct net *net, st
 }
 
 
-static void construct_fib_rule_event(struct tablesnoop_event *e, const struct fib_rule *rule,
-                                     const struct fib_rules_ops *ops)
+static void construct_fib_rule_event(struct tablesnoop_event *e, const struct flowi *fl,
+        const struct fib_rule *rule, const struct fib_rules_ops *ops)
 {
-    e->rule.table = rule->table;
+    e->type = RULE;
     e->netns = ops->fro_net->net_cookie;
-    e->rule.invalid = false;
 
-    if (rule->iifname[0] && (e->rule.has_iifname = true))
-        __builtin_memcpy(e->rule.iifname, rule->iifname, IFNAMSIZ);
-    if (rule->oifname[0] && (e->rule.has_oifname = true))
-        __builtin_memcpy(e->rule.oifname, rule->oifname, IFNAMSIZ);
+    e->rule.family = ops->family;
+    e->rule.table = rule ? rule->table : 0;
 
-    if (rule->pref && (e->rule.has_pref = true))
-        e->rule.pref = rule->pref;
-    if (rule->mark && (e->rule.has_mark = true))
-        e->rule.mark = rule->mark;
-    if (rule->l3mdev && (e->rule.has_l3mdev = true))
-        e->rule.l3mdev = rule->l3mdev;
-    if (rule->target && (e->rule.has_goto = true))
-        e->rule.goto_target = rule->target;
+    if (ops->family == AF_INET) {
+        const struct flowi4 *fl4 = bpf_core_cast(fl, struct flowi4);
+        e->rule.packet_src.ip4.s_addr = fl4->saddr;
+        e->rule.packet_dst.ip4.s_addr = fl4->daddr;
+    } else if (ops->family == AF_INET6) {
+        const struct flowi6 *fl6 = bpf_core_cast(fl, struct flowi6);
+        e->rule.packet_src.ip6 = fl6->saddr;
+        e->rule.packet_dst.ip6 = fl6->daddr;
+    } else {
+        return;
+    }
+
+    if (rule == NULL)
+        return;
+
+    __builtin_memcpy(e->rule.iifname, rule->iifname, IFNAMSIZ);
+    __builtin_memcpy(e->rule.oifname, rule->oifname, IFNAMSIZ);
+    e->rule.pref = rule->pref;
+    e->rule.mark = rule->mark;
+    e->rule.l3mdev = rule->l3mdev;
+    e->rule.goto_target = rule->target;
 
     if (ops->family == AF_INET) {
         const struct fib4_rule *rule4 = bpf_core_cast(rule, struct fib4_rule);
@@ -192,21 +201,18 @@ static void construct_fib_rule_event(struct tablesnoop_event *e, const struct fi
             dscp_full4 = rule4_v6_12->dscp_full;
         }
 
-        e->type = RULE_V4;
+        e->rule.dst.ip4.s_addr = rule4->dst;
+        e->rule.src.ip4.s_addr = rule4->src;
+        e->rule.dst_len = rule4->dst_len;
+        e->rule.src_len = rule4->src_len;
 
-        if (rule4->dst_len && (e->rule.has_dstaddr = true))
-            e->rule.dst.ip4.s_addr = rule4->dst;
-        if (rule4->src_len && (e->rule.has_srcaddr = true))
-            e->rule.src.ip4.s_addr = rule4->src;
-        if (rule4->dscp && (e->rule.has_dscp = true)) {
-            if (is_dscp_full_supported()) {
-                if (dscp_full4)
-                    e->rule.dscp = rule4->dscp >> 2;
-                else
-                    e->rule.dscp = rule4->dscp;
-            } else {
+        if (is_dscp_full_supported()) {
+            if (dscp_full4)
                 e->rule.dscp = rule4->dscp >> 2;
-            }
+            else
+                e->rule.dscp = rule4->dscp;
+        } else {
+            e->rule.dscp = rule4->dscp >> 2;
         }
 
     } else if (ops->family == AF_INET6) {
@@ -218,26 +224,19 @@ static void construct_fib_rule_event(struct tablesnoop_event *e, const struct fi
             dscp_full6 = rule6_v6_12->dscp_full;
         }
 
-        e->type = RULE_V6;
-        // bpf_printk("table: %d", rule6->common.table);
+        e->rule.dst.ip6 = rule6->dst.addr;
+        e->rule.src.ip6 = rule6->src.addr;
+        e->rule.dst_len = rule6->dst.plen;
+        e->rule.src_len = rule6->src.plen;
 
-        if (rule6->dst.plen && (e->rule.has_dstaddr = true))
-            e->rule.dst.ip6 = rule6->dst.addr;
-        if (rule6->src.plen && (e->rule.has_srcaddr = true))
-            e->rule.src.ip6 = rule6->src.addr;
-        if (rule6->dscp && (e->rule.has_dscp = true)) {
-            if (is_dscp_full_supported()) {
-                if (dscp_full6)
-                    e->rule.dscp = rule6->dscp >> 2;
-                else
-                    e->rule.dscp = rule6->dscp;
-            } else {
+        if (is_dscp_full_supported()) {
+            if (dscp_full6)
                 e->rule.dscp = rule6->dscp >> 2;
-            }
+            else
+                e->rule.dscp = rule6->dscp;
+        } else {
+            e->rule.dscp = rule6->dscp >> 2;
         }
-    } else {
-        e->type = RULE_V4;
-        e->rule.invalid = true;
     }
 }
 
@@ -316,8 +315,9 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
     if (!e)
         return BPF_OK;
 
-    construct_fib_rule_event(e, arg->rule, ops);
-    e->success = (ret == 0);
+    // note: on success fib_rules_lookup() sets arg->rule to the found one
+    construct_fib_rule_event(e, fl, arg->rule, ops);
+    e->success = (ret == 0);// && (arg->rule != NULL);
     bpf_ringbuf_submit(e, 0);
 
     return BPF_OK;
