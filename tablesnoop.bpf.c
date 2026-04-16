@@ -4,7 +4,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include <linux/version.h>
-#include <endian.h>
 
 #include "tablesnoop.h"
 #include "flavors.h"
@@ -16,8 +15,8 @@
 extern int LINUX_KERNEL_VERSION __kconfig;
 extern const void net_namespace_list __ksym;
 
-#define IPV6_FLOWINFO_MASK              htobe32(0x0FFFFFFF)
-#define IPV6_FLOWLABEL_MASK             htobe32(0x000FFFFF)
+#define IPV6_FLOWINFO_MASK              bpf_htonl(0x0FFFFFFF)
+#define IPV6_FLOWLABEL_MASK             bpf_htonl(0x000FFFFF)
 #define IPV6_TCLASS_SHIFT               20
 #define IPV6_TCLASS_MASK (IPV6_FLOWINFO_MASK & ~IPV6_FLOWLABEL_MASK)
 
@@ -155,7 +154,7 @@ static void construct_fib6_event(struct tablesnoop_event *e, struct net *net, st
     e->fib.packet_oif = fl6->__fl_common.flowic_oif;
     e->fib.packet_iif = fl6->__fl_common.flowic_iif;
     e->fib.packet_dscp = (unsigned char) (bpf_ntohl(fl6->flowlabel & IPV6_TCLASS_MASK) >> (IPV6_TCLASS_SHIFT + 2));
-    e->fib.packet_flowlabel = be32toh(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
+    e->fib.packet_flowlabel = bpf_ntohl(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
 
     construct_nexthop_data(&e->fib.nh, &res->nh->nh_common);
 }
