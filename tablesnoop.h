@@ -68,6 +68,7 @@ enum event_type {
     FIB_V4,
     FIB_V6,
     RULE,
+    MPLS,
 };
 
 union ip46addr {
@@ -151,6 +152,27 @@ struct fib_data {
     struct nexthop_data nh;
 };
 
+// from net/mpls/internal.h (why isn't this in vmlinux.h?)
+struct mpls_entry_decoded {
+        unsigned int label;
+        unsigned char ttl;
+        unsigned char tc;
+        unsigned char bos;
+};
+
+#define MPLS_MAX_LABELS 5
+
+struct mpls_data {
+    struct mpls_entry_decoded packet_label;
+
+    unsigned label_stack[MPLS_MAX_LABELS];
+    unsigned char label_count;
+    unsigned char multipath_count;
+    unsigned char via_len;
+    union ip46addr via;
+    char dev[IFNAMSIZ];
+};
+
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
 struct tablesnoop_event {
@@ -159,6 +181,7 @@ struct tablesnoop_event {
     union {
         struct fib_data fib;
         struct rule_data rule;
+        struct mpls_data mpls;
     };
     bool success : 1;
 };

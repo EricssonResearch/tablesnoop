@@ -557,6 +557,38 @@ static void print_rule_event(const struct tablesnoop_event *e)
     printf("\n");
 }
 
+static void print_mpls_event(const struct tablesnoop_event *e)
+{
+    if (!e->success && !env.show_lookup_fails)
+        return;
+
+    printf("%smpls:" RESET " " ITA "packet" RESET " label " YEL "%u" RESET " ttl " YEL "%u" RESET,
+            color_lookup_result(e), e->mpls.packet_label.label, e->mpls.packet_label.ttl);
+
+    if (e->success) {
+        printf(" " ITA "route" RESET " paths " YEL "%u" RESET " labels " YEL "%u" RESET,
+                e->mpls.multipath_count, e->mpls.label_count);
+
+        for (unsigned i=0; i<e->mpls.label_count; i++) {
+            if (i >= MPLS_MAX_LABELS) {
+                printf("/" YEL "..." RESET);
+                break;
+            }
+            printf("%s" YEL "%u" RESET,
+                    i==0 ? " stack " : "/",
+                    e->mpls.label_stack[i]);
+        }
+        //printf(" via len " YEL "%u" RESET, e->mpls.via_len);
+        if (e->mpls.via_len > 0)
+            print_ip46(" via", e->mpls.via_len==16 ? AF_INET6 : AF_INET, &e->mpls.via);
+
+        if (e->mpls.dev[0])
+            printf(" dev " CYN "%s" RESET, e->mpls.dev);
+    }
+
+    printf("\n");
+}
+
 static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
 {
     //TODO can this happen??
@@ -572,6 +604,8 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
     case FIB_V6: print_fib_event(e);
         break;
     case RULE: print_rule_event(e);
+        break;
+    case MPLS: print_mpls_event(e);
         break;
     default: fprintf(stderr, RED "unknown event type %d\n" RESET, e->type);
     }
