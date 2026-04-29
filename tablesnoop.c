@@ -450,6 +450,18 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
     else if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
         print_seg6local(netns, nh->lwt_seg6_mode, &nh->lwt_seg6local_data);
     }
+    else if (nh->lwt_type == LWTUNNEL_ENCAP_MPLS) {
+        printf(" labels " YEL "%u" RESET, nh->lwt_mpls_data.labels);
+        for (unsigned i=0; i<nh->lwt_mpls_data.labels; i++) {
+            if (i >= MPLS_MAX_LABELS) {
+                printf("/" YEL "..." RESET);
+                break;
+            }
+            printf("%s" YEL "%u" RESET,
+                    i==0 ? " stack " : "/",
+                    nh->lwt_mpls_data.label[i]);
+        }
+    }
 }
 
 static void print_fib_event(const struct tablesnoop_event *e)

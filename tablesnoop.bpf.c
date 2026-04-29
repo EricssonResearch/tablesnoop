@@ -55,6 +55,21 @@ static inline bool is_dscp_full_supported()
     return false;
 }
 
+//////////// vvvvv mpls internal stuff copied from the kernel vvvvv ///////////////
+
+// this is in include/net/mpls_iptunnel.h
+//  which we can't include because it's not uapi
+//  and even if we could include it vmlinux.h would be in conflict with it
+struct mpls_iptunnel_encap {
+        u8      labels;
+        u8      ttl_propagate;
+        u8      default_ttl;
+        u8      reserved1;
+        u32     label[];
+};
+
+//////////// ^^^^^ mpls internal stuff copied from the kernel ^^^^^ ///////////////
+
 static void construct_seg6local_data(struct seg6local_data *seg6l, const struct seg6_local_lwt *slwt)
 {
     seg6l->table = slwt->table;
@@ -108,6 +123,14 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
 
             nhd->lwt_seg6_mode = slwt->action;
             construct_seg6local_data(&nhd->lwt_seg6local_data, slwt);
+        }
+        else if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_MPLS) {
+            struct mpls_iptunnel_encap *mlwt = (struct mpls_iptunnel_encap *)nhc->nhc_lwtstate->data;
+            nhd->lwt_mpls_data.labels = mlwt->labels;
+            for (unsigned i=0; i<MPLS_MAX_LABELS; i++) {
+                if (i > nhd->lwt_mpls_data.labels) break;
+                nhd->lwt_mpls_data.label[i] = mlwt->label[i];
+            }
         }
     } else {
         nhd->lwt_type = 0;

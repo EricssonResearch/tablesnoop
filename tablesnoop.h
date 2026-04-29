@@ -122,6 +122,13 @@ struct seg6local_data {
     char csid_func_bits;
 };
 
+#define MPLS_MAX_LABELS 5
+
+struct mpls_encap_data {
+    unsigned char labels;
+    unsigned label[MPLS_MAX_LABELS];
+};
+
 struct nexthop_data {
     char dev[IFNAMSIZ]; // normally egress, for lwt it can be ingress
     int gw_family;
@@ -132,6 +139,7 @@ struct nexthop_data {
     union {
         struct my_ipv6_sr_hdr lwt_seg6_hdr;
         struct seg6local_data lwt_seg6local_data;
+        struct mpls_encap_data lwt_mpls_data;
     };
 };
 
@@ -159,8 +167,6 @@ struct mpls_entry_decoded {
         unsigned char tc;
         unsigned char bos;
 };
-
-#define MPLS_MAX_LABELS 5
 
 struct mpls_data {
     struct mpls_entry_decoded packet_label;
