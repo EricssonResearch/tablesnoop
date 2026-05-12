@@ -27,6 +27,7 @@
 // For console output coloring
 // source: https://stackoverflow.com/a/23657072/3945980
 #define BLD   "\x1B[1m"
+#define ITA   "\x1B[3m"
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
 #define YEL   "\x1B[33m"
@@ -66,9 +67,8 @@ struct netns_item {
 enum event_type {
     FIB_V4,
     FIB_V6,
-    RULE_V4,
-    RULE_V6,
-    SRV6_END,
+    RULE,
+    MPLS,
 };
 
 union ip46addr {
@@ -77,29 +77,23 @@ union ip46addr {
 };
 
 struct rule_data {
-    bool invalid : 1;
-    bool has_pref : 1;
-    bool has_mark : 1;
-    bool has_target : 1;
-    bool has_l3mdev : 1;
-    bool has_iifname : 1;
-    bool has_oifname : 1;
-    bool has_dstaddr : 1;
-    bool has_srcaddr : 1;
-    bool has_dscp : 1;
-    bool has_goto : 1;
+    union ip46addr packet_src; // version is family
+    union ip46addr packet_dst; // version is family
+
+    int family;
+    unsigned table;
 
     unsigned mark;
-    unsigned table;
     unsigned pref;
-    unsigned goto_target;
-    unsigned char family;
+    unsigned goto_target; //TODO this should always be 0
     unsigned char l3mdev;
     unsigned char dscp;
     char iifname[IFNAMSIZ];
     char oifname[IFNAMSIZ];
-    union ip46addr src; // version is from event_type
-    union ip46addr dst; // version is from event_type
+    union ip46addr src; // version is family
+    union ip46addr dst; // version is family
+    unsigned char src_len;
+    unsigned char dst_len;
 };
 
 #define SRH_MAX_HOPS 10
@@ -128,8 +122,15 @@ struct seg6local_data {
     char csid_func_bits;
 };
 
+#define MPLS_MAX_LABELS 5
+
+struct mpls_encap_data {
+    unsigned char labels;
+    unsigned label[MPLS_MAX_LABELS];
+};
+
 struct nexthop_data {
-    char egress[IFNAMSIZ];
+    char dev[IFNAMSIZ]; // normally egress, for lwt it can be ingress
     int gw_family;
     union ip46addr gw;
 
@@ -138,23 +139,44 @@ struct nexthop_data {
     union {
         struct my_ipv6_sr_hdr lwt_seg6_hdr;
         struct seg6local_data lwt_seg6local_data;
+        struct mpls_encap_data lwt_mpls_data;
     };
 };
 
 struct fib_data {
+    // version is from event_type
+    union ip46addr packet_src;
+    union ip46addr packet_dst;
+    unsigned int packet_oif; //TODO this is always 0
+    unsigned int packet_iif;
+    unsigned char packet_dscp;
+    unsigned int packet_flowlabel; // only for v6
+
+    // always the same version as the packet
+    union ip46addr fib_dst;
+    unsigned char fib_prefixlen;
+    unsigned int fib_table_id;
+
     struct nexthop_data nh;
-    unsigned int table_id;
-    unsigned int oif;
-    unsigned int iif;
-    unsigned char dscp;
-    unsigned int flowlabel; // only for v6
-    union ip46addr src; // version is from event_type
-    union ip46addr dst; // version is from event_type
 };
 
-struct srv6_data {
-    int action;
-    struct seg6local_data seg6local;
+// from net/mpls/internal.h (why isn't this in vmlinux.h?)
+struct mpls_entry_decoded {
+        unsigned int label;
+        unsigned char ttl;
+        unsigned char tc;
+        unsigned char bos;
+};
+
+struct mpls_data {
+    struct mpls_entry_decoded packet_label;
+
+    unsigned label_stack[MPLS_MAX_LABELS];
+    unsigned char label_count;
+    unsigned char multipath_count;
+    unsigned char via_len;
+    union ip46addr via;
+    char dev[IFNAMSIZ];
 };
 
 // structure for kernelspace -> userspace messaging
@@ -165,7 +187,7 @@ struct tablesnoop_event {
     union {
         struct fib_data fib;
         struct rule_data rule;
-        struct srv6_data srv6;
+        struct mpls_data mpls;
     };
     bool success : 1;
 };
