@@ -7,6 +7,10 @@
 #define IFNAMSIZ    16
 #endif
 
+#ifndef AF_UNSPEC
+#define AF_UNSPEC   0
+#endif
+
 #ifndef AF_INET
 #define AF_INET     2   /* Internet IPv4 Protocol 	*/
 #endif
@@ -15,8 +19,15 @@
 #define AF_INET6    10  /* Internet IPv6 Protocol 	*/
 #endif
 
+#ifndef SKB_DST_PTRMASK
+#define SKB_DST_NOREF   1UL
+#define SKB_DST_PTRMASK ~(SKB_DST_NOREF)
+#endif
+
 // For console output coloring
 // source: https://stackoverflow.com/a/23657072/3945980
+#define BLD   "\x1B[1m"
+#define ITA   "\x1B[3m"
 #define RED   "\x1B[31m"
 #define GRN   "\x1B[32m"
 #define YEL   "\x1B[33m"
@@ -56,91 +67,130 @@ struct netns_item {
 enum event_type {
     FIB_V4,
     FIB_V6,
-    RULE_V4,
-    RULE_V6,
+    RULE,
+    MPLS,
+};
+
+union ip46addr {
+    struct in_addr ip4;
+    struct in6_addr ip6;
 };
 
 struct rule_data {
-    bool invalid : 1;
-    bool has_pref : 1;
-    bool has_mark : 1;
-    bool has_target : 1;
-    bool has_l3mdev : 1;
-    bool has_iifname : 1;
-    bool has_oifname : 1;
-    bool has_dstaddr : 1;
-    bool has_srcaddr : 1;
-    bool has_dscp : 1;
-    bool has_goto : 1;
+    union ip46addr packet_src; // version is family
+    union ip46addr packet_dst; // version is family
+
+    int family;
+    unsigned table;
 
     unsigned mark;
-    unsigned table;
     unsigned pref;
-    unsigned goto_target;
-    unsigned char family;
+    unsigned goto_target; //TODO this should always be 0
     unsigned char l3mdev;
     unsigned char dscp;
     char iifname[IFNAMSIZ];
     char oifname[IFNAMSIZ];
-    union {
-        struct {
-            unsigned dst;
-            unsigned src;
-        } v4;
-        struct {
-            // unsigned flowlabel; //Linux v6.14
-            char dst[16];
-            char src[16];
-        } v6;
-    };
+    union ip46addr src; // version is family
+    union ip46addr dst; // version is family
+    unsigned char src_len;
+    unsigned char dst_len;
+};
+
+#define SRH_MAX_HOPS 10
+// we need this to be slightly different from ipv6_sr_hdr
+struct my_ipv6_sr_hdr {
+        __u8    nexthdr;
+        __u8    hdrlen;
+        __u8    type;
+        __u8    segments_left;
+        __u8    first_segment; /* Represents the last_entry field of SRH */
+        __u8    flags;
+        __u16   tag;
+
+        struct in6_addr segments[SRH_MAX_HOPS]; // this is [] in the original
+};
+
+// we don't need most of the stuff in struct seg6_local_lwt
+struct seg6local_data {
+    int table; // End.T
+    struct in_addr nh4; // End.DX4
+    struct in6_addr nh6; // End.DX6
+    int oif; // End.X
+    int vrf_table; // End.DT4 and End.DT46
+    int flavor_ops; // PSP and CSID
+    char csid_loc_bits;
+    char csid_func_bits;
+};
+
+#define MPLS_MAX_LABELS 5
+
+struct mpls_encap_data {
+    unsigned char labels;
+    unsigned label[MPLS_MAX_LABELS];
 };
 
 struct nexthop_data {
-    bool invalid;
-    char egress[IFNAMSIZ];
-    int type;
-    int family;
+    char dev[IFNAMSIZ]; // normally egress, for lwt it can be ingress
+    int gw_family;
+    union ip46addr gw;
+
+    unsigned short lwt_type;
+    int lwt_seg6_mode; // SEG6_IPTUN_MODE_XXX or SEG6_LOCAL_ACTION_XXX
     union {
-        struct {
-            unsigned int gw;
-        } v4;
-        struct {
-            char gw[16];
-        } v6;
+        struct my_ipv6_sr_hdr lwt_seg6_hdr;
+        struct seg6local_data lwt_seg6local_data;
+        struct mpls_encap_data lwt_mpls_data;
     };
 };
 
 struct fib_data {
+    // version is from event_type
+    union ip46addr packet_src;
+    union ip46addr packet_dst;
+    unsigned int packet_oif; //TODO this is always 0
+    unsigned int packet_iif;
+    unsigned char packet_dscp;
+    unsigned int packet_flowlabel; // only for v6
+
+    // always the same version as the packet
+    union ip46addr fib_dst;
+    unsigned char fib_prefixlen;
+    unsigned int fib_table_id;
+
     struct nexthop_data nh;
-    unsigned int table_id;
-    unsigned int oif;
-    unsigned int iif;
-    unsigned char dscp;
-    unsigned short sport;
-    unsigned short dport;
-    union {
-        struct {
-            unsigned int src;
-            unsigned int dst;
-        } v4;
-        struct {
-            unsigned int flowlabel;
-            unsigned char src[16];
-            unsigned char dst[16];
-        } v6;
-    };
+};
+
+// from net/mpls/internal.h (why isn't this in vmlinux.h?)
+struct mpls_entry_decoded {
+        unsigned int label;
+        unsigned char ttl;
+        unsigned char tc;
+        unsigned char bos;
+};
+
+struct mpls_data {
+    struct mpls_entry_decoded packet_label;
+
+    unsigned label_stack[MPLS_MAX_LABELS];
+    unsigned char label_count;
+    unsigned char multipath_count;
+    unsigned char via_len;
+    union ip46addr via;
+    char dev[IFNAMSIZ];
 };
 
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
-struct fib_event {
+struct tablesnoop_event {
     enum event_type type;
     unsigned long netns;
     union {
         struct fib_data fib;
         struct rule_data rule;
+        struct mpls_data mpls;
     };
     bool success : 1;
 };
+
 
 #endif //_H_COMMON

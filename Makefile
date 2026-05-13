@@ -1,13 +1,11 @@
-CFLAGS=-O2 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-declarations -Wwrite-strings -Werror -pg
+CFLAGS=-O2 -Wall -Wextra -Wshadow -Wstrict-prototypes -Wmissing-declarations -Wwrite-strings -Werror
 BPF_CC=clang
 CC=clang
 
 ifeq ($(MAKECMDGOALS),static)
   STATIC = -static
   EXTRA_FLAGS = -lelf -lz -lzstd
-  TARGET = -D__TARGET_ARCH_X64
 else
-  TARGET = -D__TARGET_ARCH_X86
 endif
 
 BPFTOOL=$(shell which bpftool 2>/dev/null)
@@ -26,8 +24,8 @@ static: tablesnoop
 vmlinux.h:
 	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
-tablesnoop.bpf.o: tablesnoop.bpf.c vmlinux.h tablesnoop.h
-	$(BPF_CC) -g -O2 -target bpf $(TARGET) -c $< -o $@
+tablesnoop.bpf.o: tablesnoop.bpf.c vmlinux.h tablesnoop.h flavors.h
+	$(BPF_CC) -g -O2 -target bpf -c $< -o $@
 
 tablesnoop.skel.h: tablesnoop.bpf.o
 	$(BPFTOOL) gen skeleton $^ > $@

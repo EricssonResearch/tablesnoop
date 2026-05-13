@@ -15,6 +15,10 @@
 #include <sched.h>
 #include <search.h>
 
+#include <linux/lwtunnel.h>
+#include <linux/seg6_iptunnel.h>
+#include <linux/seg6_local.h>
+
 #include "lib.h"
 #include "tablesnoop.h"
 #include "tablesnoop.skel.h"
@@ -47,20 +51,15 @@ static void signal_handler(int signo)
 	env.exiting = true;
 }
 
-static inline void stop(const char *err)
-{
-    perror(err);
-    env.exiting = true;
-}
-
 /* By default Linux uses a fast-path when no custom ip rules
- * exitst. This skip fib_rules_lookup call, which breaks
+ * exist. This skip fib_rules_lookup call, which breaks
  * tablesnoop's IPv4 FIB lookup to netns association logic.
- * As a workaround, lets insert and immediately remove a dummy
+ * As a workaround, let's insert and immediately remove a dummy
  * ip rule, just to force fib_rules_lookup call before FIB lookup.
  * */
-static void force_rule_lookups(void)
+static bool force_rule_lookups(void)
 {
+#define BAIL(msg) perror(msg); return false;
     char ns_path[NETNS_PATHLEN];
     int ret = 0;
     int fd;
@@ -70,11 +69,13 @@ static void force_rule_lookups(void)
         snprintf(ns_path, NETNS_PATHLEN, fmt_proc_netns, ns->pid);
 
         fd = open(ns_path, O_RDONLY);
-        if (fd < 0)
-            stop("open");
+        if (fd < 0) {
+            BAIL("open");
+        }
 
-        if (setns(fd, CLONE_NEWNET) < 0)
-            stop("setns");
+        if (setns(fd, CLONE_NEWNET) < 0) {
+            BAIL("setns");
+        }
 
         ret += system("ip rule add protocol 255");
         ret += system("ip -6 rule add protocol 255");
@@ -83,14 +84,17 @@ static void force_rule_lookups(void)
         ret += system("ip -6 rule del protocol 255");
         if (ret) {
             fprintf(stderr, RED "Failed to initialize tablesnoop, exiting...\n" RESET);
-            stop("system");
+            BAIL("system");
         }
 
-        if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0)
-            stop("setns");
+        if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0) {
+            BAIL("setns");
+        }
 
         close(fd);
     }
+
+    return true;
 }
 
 /* @returns: PID for the given netns inode number
@@ -179,9 +183,9 @@ error:
 }
 
 /* Returns a cache with (netns_cookie, netns_inode, pid) tuples.
- * It scan through every PID in procfs and collect  from them.
+ * It scans through every PID in procfs and collect  from them.
  * Multiple processes can have the same netns, the
- * cache only store every netns once with the smallest PID.
+ * cache only stores every netns once with the smallest PID.
  * PID and inode required for enable global rule tracing,
  * for filtering we could use net_cookie only...
  * */
@@ -298,7 +302,7 @@ static char *if_netns_indextoname(char *ifnamebuf, unsigned long nsid, unsigned 
     }
 
     if (if_indextoname(if_index, ifnamebuf) == NULL) {
-        sprintf(ifnamebuf, "-");
+        sprintf(ifnamebuf, "<%u>", if_index);
     }
 
     if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0) {
@@ -318,146 +322,307 @@ out_pid:
     return NULL;
 }
 
-static void color_lookup_result(const struct fib_event *e)
+static const char *color_lookup_result(const struct tablesnoop_event *e)
 {
-    if (env.show_lookup_fails) {
-        if (e->success) {
-            printf(GRN);
-        } else {
-            printf(RED);
+    return e->success ? GRN : RED;
+}
+
+static int print_ip46(const char *name, int family, const union ip46addr *addr)
+{
+    char buf[INET6_ADDRSTRLEN] = {0};
+    const char *col = RED;
+    if (family == AF_INET) {
+        inet_ntop(AF_INET, addr, buf, INET_ADDRSTRLEN);
+        col = MAG;
+    } else if (family == AF_INET6) {
+        inet_ntop(AF_INET6, addr, buf, INET6_ADDRSTRLEN);
+        col = BLU;
+    } else {
+        snprintf(buf, sizeof(buf), "unknown family %d", family);
+    }
+    return printf("%s %s%s" RESET, name, col, buf);
+}
+
+static inline const char *srv6_actid_to_name(int action_id)
+{
+    const char *action_names[SEG6_LOCAL_ACTION_MAX + 1] = {
+        [SEG6_LOCAL_ACTION_UNSPEC] = "unspecified",
+        [SEG6_LOCAL_ACTION_END] = "End",
+        [SEG6_LOCAL_ACTION_END_X] = "End.X",
+        [SEG6_LOCAL_ACTION_END_T] = "End.T",
+        [SEG6_LOCAL_ACTION_END_DX2] = "End.DX2",
+        [SEG6_LOCAL_ACTION_END_DX6] = "End.DX6",
+        [SEG6_LOCAL_ACTION_END_DX4] = "End.DX4",
+        [SEG6_LOCAL_ACTION_END_DT6] = "End.DT6",
+        [SEG6_LOCAL_ACTION_END_DT4] = "End.DT4",
+        [SEG6_LOCAL_ACTION_END_B6] = "End.B6",
+        [SEG6_LOCAL_ACTION_END_B6_ENCAP] = "End.B6.Encap",
+        [SEG6_LOCAL_ACTION_END_BM] = "End.BM",
+        [SEG6_LOCAL_ACTION_END_S] = "End.S",
+        [SEG6_LOCAL_ACTION_END_AS] = "End.AS",
+        [SEG6_LOCAL_ACTION_END_AM] = "End.AM",
+        [SEG6_LOCAL_ACTION_END_BPF] = "End.BPF",
+        [SEG6_LOCAL_ACTION_END_DT46] = "End.DT46",
+    };
+
+    if (action_id > SEG6_LOCAL_ACTION_MAX)
+        return "invalid";
+
+    return action_names[action_id];
+}
+
+// copied from include/vdso/bits.h and include/uapi/linux/const.h
+#define __AC(X,Y)               (X##Y)
+#define _AC(X,Y)                __AC(X,Y)
+#define UL(x)                   (_AC(x, UL))
+#define BIT(nr)                 (UL(1) << (nr))
+// copied from net/ipv6/seg6_local.c
+// the enum containing SEG6_LOCAL_FLV_OP_PSP is in include/uapi/linux/seg6_local.h
+#define SEG6_F_LOCAL_FLV_OP(flvname)    BIT(SEG6_LOCAL_FLV_OP_##flvname)
+#define SEG6_F_LOCAL_FLV_NEXT_CSID      SEG6_F_LOCAL_FLV_OP(NEXT_CSID)
+#define SEG6_F_LOCAL_FLV_PSP            SEG6_F_LOCAL_FLV_OP(PSP)
+
+static void print_seg6local(unsigned long netns, int seg6action, const struct seg6local_data *s6l)
+{
+    printf(" action " YEL "%s" RESET, srv6_actid_to_name(seg6action));
+
+    if (seg6action == SEG6_LOCAL_ACTION_END_T ||
+            seg6action == SEG6_LOCAL_ACTION_END_DT6) {
+        printf(" table " YEL "%d" RESET, s6l->table);
+    }
+    if (seg6action == SEG6_LOCAL_ACTION_END_DT4 ||
+            seg6action == SEG6_LOCAL_ACTION_END_DT46) {
+        printf(" vrf_table " YEL "%d" RESET, s6l->vrf_table);
+    }
+    if (seg6action == SEG6_LOCAL_ACTION_END_DX4) {
+        print_ip46(" nh4", AF_INET, (void*)&s6l->nh4);
+    }
+    if (seg6action == SEG6_LOCAL_ACTION_END_DX6) {
+        print_ip46(" nh6", AF_INET6, (void*)&s6l->nh6);
+    }
+    if (s6l->oif) {
+        char oifstr[IFNAMSIZ];
+        if_netns_indextoname(oifstr, netns, s6l->oif);
+        printf(" oif " CYN "%s" RESET, oifstr);
+    }
+
+    if (s6l->flavor_ops & SEG6_F_LOCAL_FLV_PSP) {
+        printf(" flavor " YEL "PSP" RESET);
+    }
+    if (s6l->flavor_ops & SEG6_F_LOCAL_FLV_NEXT_CSID) {
+        printf(" flavor " YEL "NEXT-CSID" RESET " loc " YEL "%d" RESET " func " YEL "%d" RESET,
+                s6l->csid_loc_bits, s6l->csid_func_bits);
+    }
+}
+
+static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
+{
+    printf(" " BLD "-->" RESET);
+    if (nh->gw_family != AF_UNSPEC)
+        print_ip46(" gw", nh->gw_family, &nh->gw);
+    printf(" dev " CYN "%s" RESET, nh->dev);
+
+    if (nh->lwt_type == LWTUNNEL_ENCAP_NONE)
+        return;
+
+    const char *lwt_names[] = {
+        "NONE", "MPLS", "IP", "ILA", "IP6", "SEG6", "BPF", "SEG6_LOCAL", "RPL", "IOAM6", "XFRM"
+    };
+    printf("\n    " BLD "%s" RESET, lwt_names[nh->lwt_type]);
+
+    if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6) {
+        const char *seg6_mode = "unknown";
+        switch (nh->lwt_seg6_mode) {
+            case SEG6_IPTUN_MODE_INLINE: seg6_mode = "inline"; break;
+            case SEG6_IPTUN_MODE_ENCAP: seg6_mode = "encap"; break;
+            case SEG6_IPTUN_MODE_L2ENCAP: seg6_mode = "l2encap"; break;
+            case SEG6_IPTUN_MODE_ENCAP_RED: seg6_mode = "encap.red"; break;
+            case SEG6_IPTUN_MODE_L2ENCAP_RED: seg6_mode = "l2encap.red"; break;
+        }
+
+        printf(" mode " YEL "%s" RESET " segments_left " YEL "%u" RESET " first_segment " YEL "%u" RESET " [",
+                seg6_mode, nh->lwt_seg6_hdr.segments_left, nh->lwt_seg6_hdr.first_segment);
+        for (unsigned i=0; i<=nh->lwt_seg6_hdr.segments_left; i++) {
+            print_ip46("", AF_INET6, (void*)&nh->lwt_seg6_hdr.segments[i]);
+        }
+        printf(" ]");
+    }
+    else if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
+        print_seg6local(netns, nh->lwt_seg6_mode, &nh->lwt_seg6local_data);
+    }
+    else if (nh->lwt_type == LWTUNNEL_ENCAP_MPLS) {
+        printf(" labels " YEL "%u" RESET, nh->lwt_mpls_data.labels);
+        for (unsigned i=0; i<nh->lwt_mpls_data.labels; i++) {
+            if (i >= MPLS_MAX_LABELS) {
+                printf("/" YEL "..." RESET);
+                break;
+            }
+            printf("%s" YEL "%u" RESET,
+                    i==0 ? " stack " : "/",
+                    nh->lwt_mpls_data.label[i]);
         }
     }
 }
 
-static void print_nexthop(const struct nexthop_data *nh)
-{
-    const char *fmt_nh = MAG "--> " RESET "gw: " GRN "%s " RESET "egress: %s";
-    char gw[INET6_ADDRSTRLEN] = { 0 };
-
-    if (nh->family == AF_INET)
-        inet_ntop(AF_INET, &nh->v4.gw, gw, INET_ADDRSTRLEN);
-    else if (nh->family == AF_INET6)
-        inet_ntop(AF_INET6, nh->v6.gw, gw, INET6_ADDRSTRLEN);
-    printf(fmt_nh, gw, nh->egress);
-}
-
-static void print_fib_event(const struct fib_event *e)
+static void print_fib_event(const struct tablesnoop_event *e)
 {
     if (env.filtered && !env.routes_only)
         return;
 
-    const char *fmt6_verbose = "netns: %lu iif: %s oif: %s table id: %d dscp: %u flowlabel: %x ";
-    const char *fmt4_verbose = "netns: %lu iif: %s oif: %s table id: %d dscp: %u ";
-    const char *fmt_fib = "v%d:" RESET " src: " BLU "%s " RESET " dst: " BLU "%s " RESET;
-    char src[INET6_ADDRSTRLEN];
-    char dst[INET6_ADDRSTRLEN];
     char iifstr[IFNAMSIZ];
     char oifstr[IFNAMSIZ];
 
     if (!e->success && !env.show_lookup_fails)
         return;
 
-    if (env.verbose) {
-        if_netns_indextoname(iifstr, e->netns, e->fib.iif);
-        if_netns_indextoname(oifstr, e->netns, e->fib.oif);
-        if (e->type == FIB_V4)
-            printf(fmt4_verbose, e->netns, iifstr, oifstr, e->fib.table_id, e->fib.dscp, e->fib.nh.egress);
-        else if (e->type == FIB_V6)
-            printf(fmt6_verbose, e->netns, iifstr, oifstr, e->fib.table_id, e->fib.dscp, e->fib.v6.flowlabel, e->fib.nh.egress);
-    }
+    if (e->type == FIB_V4) {
+        printf("%sfib4:" RESET " " ITA "packet" RESET, color_lookup_result(e));
+        print_ip46(" src", AF_INET, &e->fib.packet_src);
+        print_ip46(" dst", AF_INET, &e->fib.packet_dst);
+        if (env.verbose) {
+            if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
+            if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp);
+        }
 
-    color_lookup_result(e);
-    switch (e->type) {
-    case FIB_V4:
-        inet_ntop(AF_INET, &e->fib.v4.src, src, INET_ADDRSTRLEN);
-        inet_ntop(AF_INET, &e->fib.v4.dst, dst, INET_ADDRSTRLEN);
-        printf(fmt_fib, 4, src, dst);
-        break;
-    case FIB_V6:
-        inet_ntop(AF_INET6, e->fib.v6.src, src, INET6_ADDRSTRLEN);
-        inet_ntop(AF_INET6, e->fib.v6.dst, dst, INET6_ADDRSTRLEN);
-        printf(fmt_fib, 6, src, dst);
-        break;
-    default: break;
+        if (e->success) {
+            print_ip46(" " ITA "fib" RESET " key", AF_INET, &e->fib.fib_dst);
+            printf(MAG "/%u" RESET, e->fib.fib_prefixlen);
+            if (env.verbose) {
+                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
+            }
+        }
+    } else {
+        printf("%sfib6:" RESET " " ITA "packet" RESET, color_lookup_result(e));
+        print_ip46(" src", AF_INET6, &e->fib.packet_src);
+        print_ip46(" dst", AF_INET6, &e->fib.packet_dst);
+        if (env.verbose) {
+            if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
+            if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp, e->fib.packet_flowlabel);
+        }
+
+        if (e->success) {
+            print_ip46(" " ITA "fib" RESET " key", AF_INET6, &e->fib.fib_dst);
+            printf(BLU "/%u" RESET, e->fib.fib_prefixlen);
+            if (env.verbose) {
+                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
+            }
+        }
     }
 
     if (e->success)
-        print_nexthop(&e->fib.nh);
+        print_nexthop(e->netns, &e->fib.nh);
     printf("\n");
 }
 
-static void print_rule_event(const struct fib_event *e)
+static void print_rule_event(const struct tablesnoop_event *e)
 {
     if (env.filtered && !env.rules_only)
         return;
 
-    const char *fmt_rule = "rule%d:" RESET " pref: " YEL "%u" RESET " table: " YEL "%u " RESET;
-    const struct rule_data *rule = &e->rule;
-    char src[INET6_ADDRSTRLEN] = { 0 };
-    char dst[INET6_ADDRSTRLEN] = { 0 };
-    const void *psrc, *pdst;
-
-    if (rule->invalid) {
-        printf(RED "error: invalid ip rule\n" RESET);
+    if (!(e->rule.family == AF_INET || e->rule.family == AF_INET6)) {
+        printf(RED "error: invalid rule family %d\n" RESET, e->rule.family);
         return;
     }
 
     if (!e->success && !env.show_lookup_fails)
         return;
 
+    printf("%srule%d:" RESET " " ITA "packet" RESET, color_lookup_result(e),
+            e->rule.family == AF_INET ? 4 : 6);
+    print_ip46(" src", e->rule.family, &e->rule.packet_src);
+    print_ip46(" dst", e->rule.family, &e->rule.packet_dst);
 
-    if (env.verbose) {
-        printf("netns: %lu ", e->netns);
-        color_lookup_result(e);
-        printf(fmt_rule, e->type == RULE_V4 ? 4 : 6, rule->pref, rule->table);
-        if (rule->has_iifname) printf("iif: %s ", rule->iifname);
-        if (rule->has_oifname) printf("oif: %s ", rule->oifname);
-        if (rule->has_mark) printf("mark: %u ", rule->mark);
-        if (rule->has_l3mdev) printf("l3mdev: %u ", rule->l3mdev);
-        if (rule->has_goto) printf("goto: %u ", rule->goto_target);
-        if (rule->has_dscp) printf("dscp: %u ", rule->dscp);
+    if (e->success) {
+        printf(" " ITA "rule" RESET " pref " YEL "%u" RESET " table " YEL "%u" RESET,
+                e->rule.pref, e->rule.table);
 
-        int addr_size = e->type == RULE_V4 ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-        int addr_family = e->type == RULE_V4 ? AF_INET : AF_INET6;
-        if (e->type == RULE_V4) psrc = &rule->v4.src; else psrc = rule->v6.src;
-        if (e->type == RULE_V4) pdst = &rule->v4.dst; else pdst = rule->v6.dst;
-
-        if (rule->has_dstaddr) {
-            inet_ntop(addr_family, psrc, src, addr_size);
-            printf("src: %s ", src);
+        if (e->rule.src_len) {
+            print_ip46(" src", e->rule.family, &e->rule.src);
+            printf("%s/%u" RESET, e->rule.family == AF_INET ? MAG : BLU, e->rule.src_len);
         }
-        if (rule->has_srcaddr) {
-            inet_ntop(addr_family, pdst, dst, addr_size);
-            printf("dst: %s", dst);
+        if (e->rule.dst_len) {
+            print_ip46(" dst", e->rule.family, &e->rule.dst);
+            printf("%s/%u" RESET, e->rule.family == AF_INET ? MAG : BLU, e->rule.dst_len);
         }
-    } else {
-        color_lookup_result(e);
-        printf(fmt_rule, e->type == RULE_V4 ? 4 : 6, rule->pref, rule->table);
+
+        if (env.verbose) {
+            printf(" netns " YEL "%lu" RESET, e->netns);
+            if (e->rule.iifname[0])
+                printf(" iif " CYN "%s" RESET, e->rule.iifname);
+            if (e->rule.oifname[0])
+                printf(" oif " CYN "%s" RESET, e->rule.oifname);
+            if (e->rule.mark)
+                printf(" mark " YEL "%u" RESET, e->rule.mark);
+            if (e->rule.dscp)
+                printf(" dscp " YEL "%u" RESET, e->rule.dscp);
+            if (e->rule.l3mdev)
+                printf(" l3mdev " YEL "%u" RESET, e->rule.l3mdev);
+            if (e->rule.goto_target)
+                printf(" goto " YEL "%u" RESET, e->rule.goto_target);
+        }
     }
 
     printf("\n");
 }
 
-static int fib_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
+static void print_mpls_event(const struct tablesnoop_event *e)
 {
-    if (data_sz != sizeof(struct fib_event)) {
+    if (!e->success && !env.show_lookup_fails)
+        return;
+
+    printf("%smpls:" RESET " " ITA "packet" RESET " label " YEL "%u" RESET " ttl " YEL "%u" RESET,
+            color_lookup_result(e), e->mpls.packet_label.label, e->mpls.packet_label.ttl);
+
+    if (e->success) {
+        printf(" " ITA "route" RESET " paths " YEL "%u" RESET " labels " YEL "%u" RESET,
+                e->mpls.multipath_count, e->mpls.label_count);
+
+        for (unsigned i=0; i<e->mpls.label_count; i++) {
+            if (i >= MPLS_MAX_LABELS) {
+                printf("/" YEL "..." RESET);
+                break;
+            }
+            printf("%s" YEL "%u" RESET,
+                    i==0 ? " stack " : "/",
+                    e->mpls.label_stack[i]);
+        }
+        //printf(" via len " YEL "%u" RESET, e->mpls.via_len);
+        if (e->mpls.via_len > 0)
+            print_ip46(" via", e->mpls.via_len==16 ? AF_INET6 : AF_INET, &e->mpls.via);
+
+        if (e->mpls.dev[0])
+            printf(" dev " CYN "%s" RESET, e->mpls.dev);
+    }
+
+    printf("\n");
+}
+
+static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
+{
+    //TODO can this happen??
+    if (data_sz != sizeof(struct tablesnoop_event)) {
         fprintf(stderr, RED "Error: malformed event from kernel. BPF objects out-of-date?\n" RESET);
         env.exiting = true;
     }
 
-    const struct fib_event *e = data;
+    const struct tablesnoop_event *e = data;
 
     switch (e->type) {
     case FIB_V4:
     case FIB_V6: print_fib_event(e);
         break;
-    case RULE_V4:
-    case RULE_V6: print_rule_event(e);
+    case RULE: print_rule_event(e);
         break;
-    default: fprintf(stderr, RED "unknown event type\n" RESET);
+    case MPLS: print_mpls_event(e);
+        break;
+    default: fprintf(stderr, RED "unknown event type %d\n" RESET, e->type);
     }
 
-	return 0;
+    return 0;
 }
 
 static int parse_opt(int key, char *arg, struct argp_state *state) {
@@ -502,7 +667,9 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
 
 int main(int argc, char *argv[])
 {
-    int ret;
+    struct ring_buffer *rb = NULL;
+    struct tablesnoop_bpf *obj = NULL;
+    int ret = EXIT_SUCCESS;
     struct argp_option options[] =
     {
         { "v4", '4', 0, 0, "Use IPv4. By default, both IPv4 and IPv6 are logged.", 0},
@@ -529,12 +696,14 @@ int main(int argc, char *argv[])
 
     env.netns_cache = create_netns_cache();
     if (env.verbose)
-        printf("Event size: %lu bytes\n", sizeof(struct fib_event));
+        printf("Event size: %lu bytes\n", sizeof(struct tablesnoop_event));
 
-    force_rule_lookups();
+    if (force_rule_lookups() == false) {
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
 
-    struct ring_buffer *rb = NULL;
-    struct tablesnoop_bpf *obj = tablesnoop_bpf__open_and_load();
+    obj = tablesnoop_bpf__open_and_load();
     if (!obj) {
         perror("Failed to open and load BPF object\n");
         ret = EXIT_FAILURE;
@@ -558,7 +727,7 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    rb = ring_buffer__new(bpf_map__fd(obj->maps.rb), fib_event_cb, NULL, NULL);
+    rb = ring_buffer__new(bpf_map__fd(obj->maps.rb), tablesnoop_event_cb, NULL, NULL);
 	if (!rb) {
 		ret = EXIT_FAILURE;
 		perror("Failed to create ring buffer\n");
