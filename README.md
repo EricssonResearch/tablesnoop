@@ -143,3 +143,4 @@ Collect many info and very verbose, supports PCAP output.
 ### Authors
 
 Ferenc Fejes, Ferenc Orosi, Balázs Varga @ Ericsson Research
+Miklós Máté @ BME
