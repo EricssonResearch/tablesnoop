@@ -665,6 +665,23 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
     return 0;
 }
 
+bool module_loaded(const char *modname)
+{
+    unsigned modname_len = strlen(modname);
+    char line[256];
+    FILE *mods = fopen("/proc/modules", "r");
+    if (!mods) return false;
+    while (fgets(line, sizeof(line), mods)) {
+        // the line also contains information about the module
+        if (strncmp(line, modname, modname_len) == 0) {
+            fclose(mods);
+            return true;
+        }
+    }
+    fclose(mods);
+    return false;
+}
+
 int main(int argc, char *argv[])
 {
     struct ring_buffer *rb = NULL;
@@ -703,9 +720,19 @@ int main(int argc, char *argv[])
         goto cleanup;
     }
 
-    obj = tablesnoop_bpf__open_and_load();
+    obj = tablesnoop_bpf__open();
     if (!obj) {
-        perror("Failed to open and load BPF object\n");
+        perror("Failed to open BPF object\n");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+    if (!module_loaded("mpls_router")) {
+        fprintf(stderr, "Module mpls_router not loaded, disabling mpls support\n");
+        bpf_program__set_autoload(obj->progs.fentry_mpls_forward, false);
+    }
+
+    if (tablesnoop_bpf__load(obj)) {
+        perror("Failed to load BPF object\n");
         ret = EXIT_FAILURE;
         goto cleanup;
     }
