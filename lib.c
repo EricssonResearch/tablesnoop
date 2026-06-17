@@ -67,7 +67,7 @@ void array_free(struct array *array)
 }
 
 
-long get_netns_cookie(void)
+unsigned long get_netns_cookie(void)
 {
     int sk = socket(AF_INET, SOCK_STREAM, 0);
     if (sk < 0) {
@@ -75,7 +75,7 @@ long get_netns_cookie(void)
         return sk;
     }
 
-    long cookie = -1;
+    unsigned long cookie = -1;
     socklen_t sz = sizeof(cookie);
 
     if (getsockopt(sk, SOL_SOCKET, SO_NETNS_COOKIE, &cookie, &sz) != 0) {

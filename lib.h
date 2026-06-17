@@ -18,7 +18,7 @@ void array_free(struct array *array);
 /* Return the netns cookie value of the current namespace
  * on success and -1 on failure.
  * Note: can be used together with setns. */
-long get_netns_cookie(void);
+unsigned long get_netns_cookie(void);
 
 /* Return the netns file descriptor of the current net namespace
  * on success and -1 on failure.
