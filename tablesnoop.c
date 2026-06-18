@@ -34,21 +34,24 @@ const char *netns_dir = "/var/run/netns/";
 static pid_t child_processes[256];
 static int child_process_counter = 0;
 
+static struct array *netns_cache = NULL;
+static long my_netns_fd = -1; // we can switch back to the original netns with this
+
+static bool separate_on_timeout = false;
+static bool show_lwt = false;
+static bool verbose = false;
+static bool exiting = false;
+
 static struct environment env = {
-    .netns_cache = NULL,
-    .v4only = false,
-    .v6only = false,
-    .global_netns = false,
-    .exiting = false,
-    .verbose = false,
+    .filter_netns = true,
+    .show_events = SHOW_EVERYTHING,
     .show_lookup_fails = false,
-    .separate_event_prints = false,
 };
 
 static void signal_handler(int signo)
 {
     (void) signo;
-	env.exiting = true;
+	exiting = true;
 }
 
 /* By default Linux uses a fast-path when no custom ip rules
@@ -64,8 +67,8 @@ static bool force_rule_lookups(void)
     int ret = 0;
     int fd;
 
-    for (size_t i = 0; i < array_get_size(env.netns_cache); i++) {
-        const struct netns_item *ns = array_peek(env.netns_cache, i);
+    for (size_t i = 0; i < array_get_size(netns_cache); i++) {
+        const struct netns_item *ns = array_peek(netns_cache, i);
         snprintf(ns_path, NETNS_PATHLEN, fmt_proc_netns, ns->pid);
 
         fd = open(ns_path, O_RDONLY);
@@ -74,7 +77,7 @@ static bool force_rule_lookups(void)
         }
 
         if (setns(fd, CLONE_NEWNET) < 0) {
-            BAIL("setns");
+            BAIL("setns to process");
         }
 
         ret += system("ip rule add protocol 255");
@@ -87,8 +90,8 @@ static bool force_rule_lookups(void)
             BAIL("system");
         }
 
-        if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0) {
-            BAIL("setns");
+        if (setns(my_netns_fd, CLONE_NEWNET) < 0) {
+            BAIL("setns back to original");
         }
 
         close(fd);
@@ -99,14 +102,11 @@ static bool force_rule_lookups(void)
 
 /* @returns: PID for the given netns inode number
  * or -1 if netns not in the cache */
-static long get_pid_for_netns_inode(const struct array *netns_cache, unsigned int netns_inode)
+static long get_pid_for_netns_inode(const struct array *cache, unsigned int netns_inode)
 {
-    if (!netns_cache)
-        return -1;
-
-    size_t size = array_get_size(netns_cache);
+    size_t size = array_get_size(cache);
     for (size_t i = 0; i < size; ++i) {
-        const struct netns_item *item = array_peek(netns_cache, i);
+        const struct netns_item *item = array_peek(cache, i);
         if (item->ino == netns_inode) {
             return item->pid;
         }
@@ -117,14 +117,11 @@ static long get_pid_for_netns_inode(const struct array *netns_cache, unsigned in
 
 /* @returns: PID for the given netns cookie ID
  * or -1 if netns not in the cache */
-static long get_pid_for_netns(const struct array *netns_cache, unsigned long netns)
+static long get_pid_for_netns(const struct array *cache, unsigned long netns)
 {
-    if (!netns_cache)
-        return -1;
-
-    size_t size = array_get_size(netns_cache);
+    size_t size = array_get_size(cache);
     for (size_t i = 0; i < size; ++i) {
-        const struct netns_item *item = array_peek(netns_cache, i);
+        const struct netns_item *item = array_peek(cache, i);
         if (item->cookie == netns) {
             return item->pid;
         }
@@ -141,7 +138,7 @@ static void run_proc_in_netns(void)
 
     netnsfs = opendir(netns_dir);
     if (!netnsfs) {
-        if (env.verbose) {
+        if (verbose) {
             fprintf(stderr, "Info: no iproute2 net namespaces at %s\n", netns_dir);
         }
         return;
@@ -174,7 +171,7 @@ static void run_proc_in_netns(void)
 error:
             closedir(netnsfs);
             close(ns_fd);
-            env.exiting = true;
+            exiting = true;
         } else {
             child_processes[child_process_counter++] = fpid;
         }
@@ -211,7 +208,7 @@ static struct array *create_netns_cache(void)
         goto out_cache;
     }
 
-    if (env.verbose)
+    if (verbose)
         printf("Build cache for netns to pid association...\n");
 
     while ((entry = readdir(procfs)) != NULL) {
@@ -244,8 +241,8 @@ static struct array *create_netns_cache(void)
         if (!array_add(cache, &new_item))
             goto out_new_item;
 
-        if(env.verbose)
-            printf("netns: %u pid: %ld cookie: %ld\n", new_item.ino, new_item.pid, new_item.cookie);
+        //if(verbose)
+        //    printf("netns: %u pid: %ld cookie: %ld\n", new_item.ino, new_item.pid, new_item.cookie);
     }
 
     if (errno && !entry) {
@@ -256,7 +253,7 @@ static struct array *create_netns_cache(void)
     return cache;
 
 out_new_item:
-    array_free(env.netns_cache);
+    array_free(cache);
 out_cache:
     closedir(procfs);
 out_procfs:
@@ -264,7 +261,7 @@ out_procfs:
 }
 
 /* Return netdevice name for interface index within a given
- * networ namespace (also store it in @ifnamebuf)
+ * network namespace (also store it in @ifnamebuf)
  *
  * Note #1: uses a simple cache, to store successfully
  * resolved (netns_cookie, netns_inode, PID) tuples, rebuild the cache if needed
@@ -273,19 +270,21 @@ out_procfs:
  * */
 static char *if_netns_indextoname(char *ifnamebuf, unsigned long nsid, unsigned int if_index) {
     char ns_path[NETNS_PATHLEN];
-    int fd;
+    int fd = -1;
+    char *ret = ifnamebuf;
 
-    int pid = get_pid_for_netns(env.netns_cache, nsid);
+    int pid = get_pid_for_netns(netns_cache, nsid);
 
     if (pid < 0) {
-        if (env.netns_cache)
-            array_free(env.netns_cache);
+        if (netns_cache)
+            array_free(netns_cache);
+        netns_cache = create_netns_cache();
 
-        env.netns_cache = create_netns_cache();
-        pid = get_pid_for_netns(env.netns_cache, nsid);
+        pid = get_pid_for_netns(netns_cache, nsid);
         if (pid < 0) {
             perror("unable to find pid for netns\n");
-            goto out_pid;
+            sprintf(ifnamebuf, "<%u>", if_index);
+            return NULL;
         }
     }
 
@@ -293,33 +292,28 @@ static char *if_netns_indextoname(char *ifnamebuf, unsigned long nsid, unsigned 
     fd = open(ns_path, O_RDONLY);
     if (fd < 0) {
         perror("open");
-        goto out_pid;
+        sprintf(ifnamebuf, "<%u>", if_index);
+        return NULL;
     }
 
     if (setns(fd, CLONE_NEWNET) < 0) {
-        perror("setns");
-        goto out_setns;
+        perror("setns to target");
+        sprintf(ifnamebuf, "<%u>", if_index);
+        close(fd);
+        return NULL;
     }
+    close(fd);
 
     if (if_indextoname(if_index, ifnamebuf) == NULL) {
         sprintf(ifnamebuf, "<%u>", if_index);
+        ret = NULL;
     }
 
-    if (setns(env.originl_netns_fd, CLONE_NEWNET) < 0) {
-        perror("setns");
-        goto out_setns;
+    if (setns(my_netns_fd, CLONE_NEWNET) < 0) {
+        perror("setns back to mine");
     }
 
-    close(fd);
-
-    return ifnamebuf;
-
-out_setns:
-    setns(env.originl_netns_fd, CLONE_NEWNET);
-    close(fd);
-out_pid:
-    array_free(env.netns_cache);
-    return NULL;
+    return ret;
 }
 
 static const char *color_lookup_result(const struct tablesnoop_event *e)
@@ -428,7 +422,9 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
     const char *lwt_names[] = {
         "NONE", "MPLS", "IP", "ILA", "IP6", "SEG6", "BPF", "SEG6_LOCAL", "RPL", "IOAM6", "XFRM"
     };
-    printf("\n    " BLD "%s" RESET, lwt_names[nh->lwt_type]);
+    printf(" " BLD "%s" RESET, lwt_names[nh->lwt_type]);
+    if (!show_lwt)
+        return;
 
     if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6) {
         const char *seg6_mode = "unknown";
@@ -466,9 +462,6 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
 
 static void print_fib_event(const struct tablesnoop_event *e)
 {
-    if (env.filtered && !env.routes_only)
-        return;
-
     char iifstr[IFNAMSIZ];
     char oifstr[IFNAMSIZ];
 
@@ -479,7 +472,7 @@ static void print_fib_event(const struct tablesnoop_event *e)
         printf("%sfib4:" RESET " " ITA "packet" RESET, color_lookup_result(e));
         print_ip46(" src", AF_INET, &e->fib.packet_src);
         print_ip46(" dst", AF_INET, &e->fib.packet_dst);
-        if (env.verbose) {
+        if (verbose) {
             if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
             if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
             printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET,
@@ -489,7 +482,7 @@ static void print_fib_event(const struct tablesnoop_event *e)
         if (e->success) {
             print_ip46(" " ITA "fib" RESET " key", AF_INET, &e->fib.fib_dst);
             printf(MAG "/%u" RESET, e->fib.fib_prefixlen);
-            if (env.verbose) {
+            if (verbose) {
                 printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
             }
         }
@@ -497,7 +490,7 @@ static void print_fib_event(const struct tablesnoop_event *e)
         printf("%sfib6:" RESET " " ITA "packet" RESET, color_lookup_result(e));
         print_ip46(" src", AF_INET6, &e->fib.packet_src);
         print_ip46(" dst", AF_INET6, &e->fib.packet_dst);
-        if (env.verbose) {
+        if (verbose) {
             if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
             if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
             printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET,
@@ -507,7 +500,7 @@ static void print_fib_event(const struct tablesnoop_event *e)
         if (e->success) {
             print_ip46(" " ITA "fib" RESET " key", AF_INET6, &e->fib.fib_dst);
             printf(BLU "/%u" RESET, e->fib.fib_prefixlen);
-            if (env.verbose) {
+            if (verbose) {
                 printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
             }
         }
@@ -520,9 +513,6 @@ static void print_fib_event(const struct tablesnoop_event *e)
 
 static void print_rule_event(const struct tablesnoop_event *e)
 {
-    if (env.filtered && !env.rules_only)
-        return;
-
     if (!(e->rule.family == AF_INET || e->rule.family == AF_INET6)) {
         printf(RED "error: invalid rule family %d\n" RESET, e->rule.family);
         return;
@@ -549,7 +539,7 @@ static void print_rule_event(const struct tablesnoop_event *e)
             printf("%s/%u" RESET, e->rule.family == AF_INET ? MAG : BLU, e->rule.dst_len);
         }
 
-        if (env.verbose) {
+        if (verbose) {
             printf(" netns " YEL "%lu" RESET, e->netns);
             if (e->rule.iifname[0])
                 printf(" iif " CYN "%s" RESET, e->rule.iifname);
@@ -606,7 +596,7 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
     //TODO can this happen??
     if (data_sz != sizeof(struct tablesnoop_event)) {
         fprintf(stderr, RED "Error: malformed event from kernel. BPF objects out-of-date?\n" RESET);
-        env.exiting = true;
+        exiting = true;
     }
 
     const struct tablesnoop_event *e = data;
@@ -629,40 +619,60 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
     (void) arg; (void) state;
 
     switch (key) {
-    case '4':
-        env.v4only = true;
+    case OPT_FIB4:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_FIB4;
         break;
-    case '6':
-        env.v6only = true;
+    case OPT_FIB6:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_FIB6;
+        break;
+    case OPT_RULE4:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_RULE4;
+        break;
+    case OPT_RULE6:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_RULE6;
         break;
     case 'g':
-        env.global_netns = true;
+        env.filter_netns = false;
         break;
+    case 'l':
+        show_lwt = true;
     case 'v':
-        env.verbose = true;
+        verbose = true;
         break;
     case 's':
-        env.separate_event_prints = true;
+        separate_on_timeout = true;
         break;
     case 'x':
         env.show_lookup_fails = true;
         break;
-    case OPT_ROUTES_ONLY:
-        env.filtered = true;
-        env.routes_only = true;
-        break;
-    case OPT_RULES_ONLY:
-        env.filtered = true;
-        env.rules_only = true;
-        break;
-    }
-
-    if (env.v4only && env.v6only) {
-        env.v4only = false;
-        env.v6only = false;
     }
 
     return 0;
+}
+
+bool module_loaded(const char *modname)
+{
+    unsigned modname_len = strlen(modname);
+    char line[256];
+    FILE *mods = fopen("/proc/modules", "r");
+    if (!mods) return false;
+    while (fgets(line, sizeof(line), mods)) {
+        // the line also contains information about the module
+        if (strncmp(line, modname, modname_len) == 0) {
+            fclose(mods);
+            return true;
+        }
+    }
+    fclose(mods);
+    return false;
 }
 
 int main(int argc, char *argv[])
@@ -672,40 +682,59 @@ int main(int argc, char *argv[])
     int ret = EXIT_SUCCESS;
     struct argp_option options[] =
     {
-        { "v4", '4', 0, 0, "Use IPv4. By default, both IPv4 and IPv6 are logged.", 0},
-        { "v6", '6', 0, 0, "Use IPv6. By default, both IPv4 and IPv6 are logged.", 0},
-        { "global", 'g', 0, 0, "Collect events from all network namespace (global).", 0},
+        { "fib4", OPT_FIB4, 0, 0, "Show only IPv4 FIB lookups", 0},
+        { "fib6", OPT_FIB6, 0, 0, "Show only IPv6 FIB lookups", 0},
+        { "rule4", OPT_RULE4, 0, 0, "Show only IPv4 rule lookups", 0},
+        { "rule6", OPT_RULE6, 0, 0, "Show only IPv6 rule lookups", 0},
+        { "global", 'g', 0, 0, "Collect events from all network namespaces (global).", 0},
+        { "lwt", 'l', 0, 0, "Show LightWeight Tunnel info (off by default", 0},
         { "verbose", 'v', 0, 0, "Enable detailed output.", 0},
-        { "separate", 's', 0, 0, "Insert empty line after a timeout.", 0},
+        { "separator", 's', 0, 0, "Print separator line after a timeout.", 0},
         { "show_failed", 'x', 0, 0, "Show failed lookup results", 0},
-        { "route", OPT_ROUTES_ONLY, 0, 0, "Only display route lookups", 0},
-        { "rule", OPT_RULES_ONLY, 0, 0, "Only display rule lookups", 0},
         { 0 }
     };
 
     struct argp argp = { options, parse_opt, 0, 0, 0, 0, 0 };
     argp_parse(&argp, argc, argv, 0, 0, 0);
 
-    env.original_netns = get_netns_cookie();
-    if (env.verbose)
-        printf("Original netns: %lu\n", env.original_netns);
+    env.my_netns_cookie = get_netns_cookie();
+    if (verbose)
+        printf("Original netns: %lu\n", env.my_netns_cookie);
 
-    env.originl_netns_fd = get_netns_fd();
-    if (env.originl_netns_fd < 0)
+    my_netns_fd = get_netns_fd();
+    if (my_netns_fd < 0)
         return EXIT_FAILURE;
 
-    env.netns_cache = create_netns_cache();
-    if (env.verbose)
-        printf("Event size: %lu bytes\n", sizeof(struct tablesnoop_event));
+    netns_cache = create_netns_cache();
+    //if (verbose)
+    //    printf("Event size: %lu bytes\n", sizeof(struct tablesnoop_event));
 
+    //TODO we don't need this if we are not tracing rules (?)
     if (force_rule_lookups() == false) {
         ret = EXIT_FAILURE;
         goto cleanup;
     }
 
-    obj = tablesnoop_bpf__open_and_load();
+    obj = tablesnoop_bpf__open();
     if (!obj) {
-        perror("Failed to open and load BPF object\n");
+        perror("Failed to open BPF object\n");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+    if (!module_loaded("mpls_router")) {
+        fprintf(stderr, "Module mpls_router not loaded, disabling mpls support\n");
+        bpf_program__set_autoload(obj->progs.fentry_mpls_forward, false);
+    }
+    if ((env.show_events & (SHOW_RULE4|SHOW_RULE6)) == 0) {
+        bpf_program__set_autoload(obj->progs.fexit_fib_rules_lookup, false);
+    }
+    if ((env.show_events & (SHOW_FIB4|SHOW_FIB6)) == 0) {
+        bpf_program__set_autoload(obj->progs.fexit_fib_get_table, false);
+        bpf_program__set_autoload(obj->progs.fexit_fib_table_lookup, false);
+    }
+
+    if (tablesnoop_bpf__load(obj)) {
+        perror("Failed to load BPF object\n");
         ret = EXIT_FAILURE;
         goto cleanup;
     }
@@ -734,16 +763,16 @@ int main(int argc, char *argv[])
 		goto cleanup;
 	}
 
-    bool print_separator = env.separate_event_prints;
-    while (!env.exiting) {
+    bool print_separator = false;
+    while (!exiting) {
         ret = ring_buffer__poll(rb, 500);
         if (ret == 0) {
             if (print_separator) {
                 print_separator = false;
-                printf("\n");
+                printf("----------------------------------------------------\n");
             }
         } else {
-            print_separator = env.separate_event_prints;
+            print_separator = separate_on_timeout;
         }
         if (ret == -EINTR)
             break;
@@ -755,7 +784,7 @@ int main(int argc, char *argv[])
 
 cleanup:
     printf(RESET"\n"); //disable custom colors
-    close(env.originl_netns_fd);
+    close(my_netns_fd);
     ring_buffer__free(rb);
     tablesnoop_bpf__destroy(obj);
     for (int i = 0; i < child_process_counter; ++i) {

@@ -346,7 +346,7 @@ struct mpls_route { /* next hop label forwarding entry */
 
 //////////// ^^^^^ mpls internal stuff copied from the kernel ^^^^^ ///////////////
 
-static int construct_mpls_event(struct tablesnoop_event *e, struct net *net, struct sk_buff *skb)
+static bool construct_mpls_event(struct tablesnoop_event *e, struct net *net, struct sk_buff *skb)
 {
     e->type = MPLS;
     e->netns = net->net_cookie;
@@ -358,7 +358,7 @@ static int construct_mpls_event(struct tablesnoop_event *e, struct net *net, str
 
     struct mpls_route *rt = mpls_route_input_rcu(net, dec.label);
     if (rt == NULL) {
-        return 0;
+        return false;
     }
 
     // The mpls_route can have multiple nexthops with their own label stack and
@@ -407,7 +407,7 @@ static int construct_mpls_event(struct tablesnoop_event *e, struct net *net, str
         e->mpls.dev[0] = 0;
     }
 
-    return 1;
+    return true;
 }
 
 SEC("fexit/fib_table_lookup")
@@ -420,19 +420,23 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
         return BPF_OK;
 
     // bpf_printk("fexit: table: %p %u", key, *inum);
-    if (!env.global_netns && env.original_netns != *netns)
+    if (env.filter_netns && env.my_netns_cookie != *netns)
         return BPF_OK;
 
-    if (env.v6only)
+    if ((env.show_events & SHOW_FIB4) == 0)
         return BPF_OK;
     // bpf_printk("fib4 lookup %d", ret);
+
+    bool success = res->table != NULL;
+    if (env.show_lookup_fails == false && success == false)
+        return BPF_OK;
 
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
     construct_fib4_event(e, tb, flp, res, fib_flags, *netns, ret);
-    e->success = (res->table != NULL);
+    e->success = success;
     bpf_ringbuf_submit(e, 0);
     return BPF_OK;
 }
@@ -442,19 +446,23 @@ SEC("fexit/fib6_table_lookup")
 int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table, int oif,
              struct flowi6 *fl6, struct fib6_result *res, int strict, int ret)
 {
-    if (!env.global_netns && env.original_netns != net->net_cookie)
+    if (env.filter_netns && env.my_netns_cookie != net->net_cookie)
         return BPF_OK;
 
-    if (env.v4only)
+    if ((env.show_events & SHOW_FIB6) == 0)
         return BPF_OK;
     // bpf_printk("fib6 lookup %d", ret);
+
+    bool success = res->f6i != net->ipv6.fib6_null_entry;
+    if (env.show_lookup_fails == false && success == false)
+        return BPF_OK;
 
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
     construct_fib6_event(e, net, table, oif, fl6, res, strict, ret);
-    e->success = (res->f6i != net->ipv6.fib6_null_entry);
+    e->success = success;
     bpf_ringbuf_submit(e, 0);
     return BPF_OK;
 }
@@ -474,11 +482,16 @@ SEC("fexit/fib_rules_lookup")
 int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl,
              int flags, struct fib_lookup_arg *arg, int ret)
 {
-    if (!env.global_netns && env.original_netns != ops->fro_net->net_cookie)
+    if (env.filter_netns && env.my_netns_cookie != ops->fro_net->net_cookie)
         return BPF_OK;
 
-    if ((env.v4only && ops->family != AF_INET) ||
-        (env.v6only && ops->family != AF_INET6))
+    if (ops->family == AF_INET && (env.show_events & SHOW_RULE4) == 0)
+            return BPF_OK;
+    if (ops->family == AF_INET6 && (env.show_events & SHOW_RULE6) == 0)
+            return BPF_OK;
+
+    bool success = ret == 0;
+    if (env.show_lookup_fails == false && success == false)
         return BPF_OK;
 
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
@@ -487,7 +500,7 @@ int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl
 
     // note: on success fib_rules_lookup() sets arg->rule to the found one
     construct_fib_rule_event(e, fl, arg->rule, ops);
-    e->success = (ret == 0);// && (arg->rule != NULL);
+    e->success = success;
     bpf_ringbuf_submit(e, 0);
 
     return BPF_OK;
@@ -498,13 +511,14 @@ int BPF_PROG(fentry_mpls_forward, struct sk_buff *skb, struct net_device *dev,
             struct packet_type *pt, struct net_device *orig_dev)
 {
     struct net *net = dev->nd_net.net; //dev_net_rcu(dev);
-    if (!env.global_netns && env.original_netns != net->net_cookie)
+    if (env.filter_netns && env.my_netns_cookie != net->net_cookie)
         return BPF_OK;
 
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
+    //TODO can we skip submitting on no success?
     e->success = construct_mpls_event(e, net, skb);
     bpf_ringbuf_submit(e, 0);
 

@@ -38,24 +38,23 @@
 #define RESET "\x1B[0m"
 
 enum opts {
-    OPT_ROUTES_ONLY = 256,
-    OPT_RULES_ONLY
+    OPT_FIB4 = 500,
+    OPT_FIB6,
+    OPT_RULE4,
+    OPT_RULE6,
 };
 
+#define SHOW_RULE4 0x01u
+#define SHOW_RULE6 0x02u
+#define SHOW_FIB4  0x04u
+#define SHOW_FIB6  0x08u
+#define SHOW_EVERYTHING 0xffffffffu
+
 struct environment {
-    struct array *netns_cache; //to avoid iterating procs over and over
-    unsigned long original_netns; //kernel's struct net::net_cookie
-    long originl_netns_fd; // = open(/proc/self/ns/net)
-    bool separate_event_prints;
-    bool v4only;
-    bool v6only;
-    bool global_netns;
-    bool exiting;
-    bool verbose;
+    unsigned long my_netns_cookie;
+    bool filter_netns;
+    unsigned show_events; // bitfield of SHOW_XXX
     bool show_lookup_fails;
-    bool filtered;
-    bool routes_only;
-    bool rules_only;
 };
 
 struct netns_item {
