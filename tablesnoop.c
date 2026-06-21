@@ -475,16 +475,15 @@ static void print_fib_event(const struct tablesnoop_event *e)
         if (verbose) {
             if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
             if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
-            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET,
-                    iifstr, oifstr, e->fib.packet_dscp);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET
+                   " netns " YEL "%lu" RESET " table id " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp,
+                    e->netns, e->fib.fib_table_id);
         }
 
         if (e->success) {
             print_ip46(" " ITA "fib" RESET " key", AF_INET, &e->fib.fib_dst);
             printf(MAG "/%u" RESET, e->fib.fib_prefixlen);
-            if (verbose) {
-                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
-            }
         }
     } else {
         printf("%sfib6:" RESET " " ITA "packet" RESET, color_lookup_result(e));
@@ -493,16 +492,15 @@ static void print_fib_event(const struct tablesnoop_event *e)
         if (verbose) {
             if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
             if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
-            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET,
-                    iifstr, oifstr, e->fib.packet_dscp, e->fib.packet_flowlabel);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET
+                   " netns " YEL "%lu" RESET " table id " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp, e->fib.packet_flowlabel,
+                    e->netns, e->fib.fib_table_id);
         }
 
         if (e->success) {
             print_ip46(" " ITA "fib" RESET " key", AF_INET6, &e->fib.fib_dst);
             printf(BLU "/%u" RESET, e->fib.fib_prefixlen);
-            if (verbose) {
-                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
-            }
         }
     }
 
