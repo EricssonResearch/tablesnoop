@@ -76,18 +76,6 @@ static unsigned long fib4_table_netns(const struct fib_table *table)
     return 0;
 }
 
-static void list_all_netns_native()
-{
-    struct list_head *nslist = bpf_core_cast(&net_namespace_list, struct list_head);
-    struct list_head *iter = nslist->next;
-    bpf_repeat(1024) {
-        const struct net *net = bpf_core_cast(container_of(iter, struct net, list), struct net);
-        // bpf_printk("net: %p inode: %u cookie: %lu", net, net->ns.inum, net->net_cookie);
-        if (iter->next == nslist)
-            break;
-        iter = iter->next;
-    }
-}
 
 static inline bool is_dscp_full_supported()
 {
