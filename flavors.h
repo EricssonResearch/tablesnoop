@@ -19,6 +19,22 @@ struct flowi_common___pre6_18 {
         struct flowi_tunnel flowic_tun_key;
 };
 
+// flowi_common::flowic_tos renamed to flowic_dscp in 6.18+
+struct flowi_common___post6_18 {
+        int     flowic_oif;
+        int     flowic_iif;
+        int     flowic_l3mdev;
+        __u32   flowic_mark;
+        __u8    flowic_dscp;
+        __u8    flowic_scope;
+        __u8    flowic_proto;
+        __u8    flowic_flags;
+        __u32   flowic_secid;
+        kuid_t  flowic_uid;
+        __u32           flowic_multipath_hash;
+        struct flowi_tunnel flowic_tun_key;
+};
+
 // fib4_rule::dscp_full was added
 //  b9455fef8b1fc662369d982fe97dc66e6c332699 between v6.11-rc7 and v6.12-rc1
 //  ipv4/fib_rules.c

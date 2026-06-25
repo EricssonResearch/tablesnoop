@@ -181,10 +181,11 @@ static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_ta
     e->fib.packet_oif = flp->__fl_common.flowic_oif;
     e->fib.packet_iif = flp->__fl_common.flowic_iif;
     struct flowi_common___pre6_18 *flowic_pre6_18  = (void*)&flp->__fl_common;
+    struct flowi_common___post6_18 *flowic_post6_18 = (void*)&flp->__fl_common;
     if (bpf_core_field_exists(flowic_pre6_18->flowic_tos)) {
         e->fib.packet_dscp = flowic_pre6_18->flowic_tos >> 2; // TODO: DSCP is not correct?
     } else {
-        e->fib.packet_dscp = flp->__fl_common.flowic_dscp >> 2;
+        e->fib.packet_dscp = flowic_post6_18->flowic_dscp >> 2;
     }
 
     construct_nexthop_data(&e->fib.nh, res->nhc);
