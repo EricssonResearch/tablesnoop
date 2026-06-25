@@ -21,6 +21,7 @@ extern const void net_namespace_list __ksym;
 #define IPV6_TCLASS_SHIFT               20
 #define IPV6_TCLASS_MASK (IPV6_FLOWINFO_MASK & ~IPV6_FLOWLABEL_MASK)
 #define MAX_NETNS_COUNT                 1024
+#define NETDEV_HASHENTRIES              256
 
 struct {
     __uint (type, BPF_MAP_TYPE_RINGBUF);
@@ -39,7 +40,7 @@ volatile struct environment env;
  * Note: this only used for trace failed lookups. When the routing lookup
  * is successful, struct fib_result.table is valid and netns is there.
  * */
-static unsigned long fib4_table_netns(const struct fib_table *table)
+static const struct net *fib4_table_netns(const struct fib_table *table)
 {
     const unsigned FIB_TABLE_HASHSZ = CONFIG_IP_MULTIPLE_TABLES ? 256 : 2;
     unsigned h = BPF_CORE_READ(table, tb_id) & (FIB_TABLE_HASHSZ - 1);
@@ -49,31 +50,52 @@ static unsigned long fib4_table_netns(const struct fib_table *table)
     struct list_head *iter = netns_list->next;
 
     bpf_repeat(MAX_NETNS_COUNT) {
-        const struct net *netns = bpf_core_cast(
-            container_of(iter, struct net, list), struct net);
 
-        struct hlist_head *bucket = BPF_CORE_READ(netns, ipv4.fib_table_hash);
-        if (bucket == NULL)
-            return 0;
+        void *net_ptr = container_of(iter, struct net, list);
+        const struct net *net = bpf_core_cast(net_ptr, struct net);
+        struct hlist_head *bucket = BPF_CORE_READ(net, ipv4.fib_table_hash);
+        if (!bucket)
+            return NULL;
 
         struct hlist_node *node = BPF_CORE_READ(bucket + h, first);
         bpf_repeat(FIB_TABLE_HASHSZ) {
-
             if (!node)
                 break;
-
             if ((const void *) node == (const void *) table)
-                return BPF_CORE_READ(netns, net_cookie);
-
+                return net;
             node = BPF_CORE_READ(node, next);
         }
 
-        if (iter->next == netns_list)
+        if (iter->next == netns_list) // circular
             break;
         iter = iter->next;
     }
 
     return 0;
+}
+
+/* Resolve ifindex to interface name within a netns*/
+static inline void get_ifname_netns(const struct net *netns, const int ifindex,
+                                    char ifnamebuf[IFNAMSIZ])
+{
+    if (!ifindex)
+        return;
+
+    const int dev_index = ifindex & (NETDEV_HASHENTRIES - 1);
+    struct hlist_head *index_head = BPF_CORE_READ(netns, dev_index_head);
+    struct hlist_node *iter = BPF_CORE_READ(&index_head[dev_index], first);
+
+    bpf_repeat(NETDEV_HASHENTRIES) {
+        if (!iter)
+            break;
+        void *dev_ptr = container_of(iter, struct net_device, index_hlist);
+        const struct net_device *dev = bpf_core_cast(dev_ptr, struct net_device);
+        if (BPF_CORE_READ(dev, ifindex) == ifindex) {
+            __builtin_memcpy(ifnamebuf, dev->name, IFNAMSIZ);
+            return;
+        }
+        iter = BPF_CORE_READ(iter, next);
+    }
 }
 
 
@@ -99,19 +121,19 @@ struct mpls_iptunnel_encap {
 
 //////////// ^^^^^ mpls internal stuff copied from the kernel ^^^^^ ///////////////
 
-static void construct_seg6local_data(struct seg6local_data *seg6l, const struct seg6_local_lwt *slwt)
+static void construct_seg6local_data(const struct net *net, struct seg6local_data *seg6l, const struct seg6_local_lwt *slwt)
 {
     seg6l->table = slwt->table;
     seg6l->nh4 = slwt->nh4;
     seg6l->nh6 = slwt->nh6;
-    seg6l->oif = slwt->oif;
+    get_ifname_netns(net, slwt->oif, seg6l->oif);
     seg6l->vrf_table = slwt->dt_info.vrf_table;
     seg6l->flavor_ops = slwt->flv_info.flv_ops;
     seg6l->csid_loc_bits = slwt->flv_info.lcblock_bits;
     seg6l->csid_func_bits = slwt->flv_info.lcnode_func_bits;
 }
 
-static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh_common *nhc)
+static void construct_nexthop_data(const struct net *net, struct nexthop_data *nhd, const struct fib_nh_common *nhc)
 {
     struct in6_addr *in6 = NULL;
     struct in_addr *in4 = NULL;
@@ -151,7 +173,7 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
             struct seg6_local_lwt *slwt = (struct seg6_local_lwt *)nhc->nhc_lwtstate->data;
 
             nhd->lwt_seg6_mode = slwt->action;
-            construct_seg6local_data(&nhd->lwt_seg6local_data, slwt);
+            construct_seg6local_data(net, &nhd->lwt_seg6local_data, slwt);
         }
         else if (nhc->nhc_lwtstate->type == LWTUNNEL_ENCAP_MPLS) {
             struct mpls_iptunnel_encap *mlwt = (struct mpls_iptunnel_encap *)nhc->nhc_lwtstate->data;
@@ -166,11 +188,15 @@ static void construct_nexthop_data(struct nexthop_data *nhd, const struct fib_nh
     }
 }
 
-static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_table *tb, const struct flowi4 *flp,
-    const struct fib_result *res, int fib_flags, unsigned long netns, int ret)
+static void construct_fib4_event(struct tablesnoop_event *e, const struct net *net,
+                                 const struct fib_table *tb, const struct flowi4 *flp,
+                                 const struct fib_result *res, int fib_flags, int ret)
 {
     e->type = FIB_V4;
-    e->netns = netns;
+    if (net)
+        e->netns = net->net_cookie;
+    else
+        e->netns = 0;
 
     e->fib.fib_dst.ip4.s_addr = res->prefix;
     e->fib.fib_prefixlen = res->prefixlen;
@@ -178,8 +204,8 @@ static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_ta
 
     e->fib.packet_dst.ip4.s_addr = flp->daddr;
     e->fib.packet_src.ip4.s_addr = flp->saddr;
-    e->fib.packet_oif = flp->__fl_common.flowic_oif;
-    e->fib.packet_iif = flp->__fl_common.flowic_iif;
+    get_ifname_netns(net, flp->__fl_common.flowic_oif, e->fib.packet_oif);
+    get_ifname_netns(net, flp->__fl_common.flowic_iif, e->fib.packet_iif);
     struct flowi_common___pre6_18 *flowic_pre6_18  = (void*)&flp->__fl_common;
     struct flowi_common___post6_18 *flowic_post6_18 = (void*)&flp->__fl_common;
     if (bpf_core_field_exists(flowic_pre6_18->flowic_tos)) {
@@ -188,12 +214,13 @@ static void construct_fib4_event(struct tablesnoop_event *e, const struct fib_ta
         e->fib.packet_dscp = flowic_post6_18->flowic_dscp >> 2;
     }
 
-    construct_nexthop_data(&e->fib.nh, res->nhc);
+    construct_nexthop_data(net, &e->fib.nh, res->nhc);
 }
 
 
-static void construct_fib6_event(struct tablesnoop_event *e, struct net *net, struct fib6_table *table, int oif,
-                                 struct flowi6 *fl6, struct fib6_result *res, int strict, int ret)
+static void construct_fib6_event(struct tablesnoop_event *e, const struct net *net,
+                                 struct fib6_table *table, int oif, struct flowi6 *fl6,
+                                 struct fib6_result *res, int strict, int ret)
 {
     e->type = FIB_V6;
     e->netns = net->net_cookie;
@@ -204,12 +231,12 @@ static void construct_fib6_event(struct tablesnoop_event *e, struct net *net, st
 
     e->fib.packet_dst.ip6 = fl6->daddr;
     e->fib.packet_src.ip6 = fl6->saddr;
-    e->fib.packet_oif = fl6->__fl_common.flowic_oif;
-    e->fib.packet_iif = fl6->__fl_common.flowic_iif;
+    get_ifname_netns(net, fl6->__fl_common.flowic_oif, e->fib.packet_oif);
+    get_ifname_netns(net, fl6->__fl_common.flowic_iif, e->fib.packet_iif);
     e->fib.packet_dscp = (unsigned char) (bpf_ntohl(fl6->flowlabel & IPV6_TCLASS_MASK) >> (IPV6_TCLASS_SHIFT + 2));
     e->fib.packet_flowlabel = bpf_ntohl(fl6->flowlabel & IPV6_FLOWLABEL_MASK);
 
-    construct_nexthop_data(&e->fib.nh, &res->nh->nh_common);
+    construct_nexthop_data(net, &e->fib.nh, &res->nh->nh_common);
 }
 
 
@@ -452,17 +479,17 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
     if (env.show_lookup_fails == false && success == false)
         return BPF_OK;
 
-    unsigned long netns;
+    struct net *netns;
     if (success)
-        netns = BPF_CORE_READ(res, fi, fib_net, net_cookie);
+        netns = bpf_core_cast(BPF_CORE_READ(res, fi, fib_net), struct net);
     else
-        netns = fib4_table_netns(tb);
+        netns = bpf_core_cast(fib4_table_netns(tb), struct net);
 
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
-    construct_fib4_event(e, tb, flp, res, fib_flags, netns, ret);
+    construct_fib4_event(e, netns, tb, flp, res, fib_flags, ret);
     e->success = success;
     bpf_ringbuf_submit(e, 0);
     return BPF_OK;

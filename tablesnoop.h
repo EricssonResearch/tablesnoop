@@ -114,7 +114,7 @@ struct seg6local_data {
     int table; // End.T
     struct in_addr nh4; // End.DX4
     struct in6_addr nh6; // End.DX6
-    int oif; // End.X
+    char oif[IFNAMSIZ]; // End.X
     int vrf_table; // End.DT4 and End.DT46
     int flavor_ops; // PSP and CSID
     char csid_loc_bits;
@@ -146,8 +146,8 @@ struct fib_data {
     // version is from event_type
     union ip46addr packet_src;
     union ip46addr packet_dst;
-    unsigned int packet_oif; //TODO this is always 0
-    unsigned int packet_iif;
+    char packet_oif[IFNAMSIZ]; //TODO this is always 0
+    char packet_iif[IFNAMSIZ];
     unsigned char packet_dscp;
     unsigned int packet_flowlabel; // only for v6
 
