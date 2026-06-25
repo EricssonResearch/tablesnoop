@@ -42,12 +42,14 @@ enum opts {
     OPT_FIB6,
     OPT_RULE4,
     OPT_RULE6,
+    OPT_NEIGH,
 };
 
 #define SHOW_RULE4 0x01u
 #define SHOW_RULE6 0x02u
 #define SHOW_FIB4  0x04u
 #define SHOW_FIB6  0x08u
+#define SHOW_NEIGH 0x10u
 #define SHOW_EVERYTHING 0xffffffffu
 
 struct environment {

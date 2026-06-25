@@ -444,6 +444,11 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             env.show_events = 0;
         env.show_events |= SHOW_RULE6;
         break;
+    case OPT_NEIGH:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_NEIGH;
+        break;
     case 'g':
         env.filter_netns = false;
         break;
@@ -491,6 +496,7 @@ int main(int argc, char *argv[])
         { "fib6", OPT_FIB6, 0, 0, "Show only IPv6 FIB lookups", 0},
         { "rule4", OPT_RULE4, 0, 0, "Show only IPv4 rule lookups", 0},
         { "rule6", OPT_RULE6, 0, 0, "Show only IPv6 rule lookups", 0},
+        { "neigh", OPT_NEIGH, 0, 0, "Show only neighbor lookups", 0},
         { "global", 'g', 0, 0, "Collect events from all network namespaces (global).", 0},
         { "lwt", 'l', 0, 0, "Show LightWeight Tunnel info (off by default", 0},
         { "verbose", 'v', 0, 0, "Enable detailed output.", 0},
@@ -525,6 +531,12 @@ int main(int argc, char *argv[])
     if ((env.show_events & SHOW_FIB6) == 0) {
         // SRv6 cached-route probe only makes sense for IPv6 FIB tracing
         bpf_program__set_autoload(obj->progs.fexit_seg6_do_srh, false);
+    }
+    if ((env.show_events & SHOW_NEIGH) == 0) {
+        bpf_program__set_autoload(obj->progs.fexit_neigh_lookup, false);
+        bpf_program__set_autoload(obj->progs.fexit_neigh_create, false);
+        bpf_program__set_autoload(obj->progs.fexit_neigh_destroy, false);
+        bpf_program__set_autoload(obj->progs.fexit_neigh_update, false);
     }
 
     if (tablesnoop_bpf__load(obj)) {
