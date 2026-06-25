@@ -485,24 +485,24 @@ static bool construct_mpls_event(struct tablesnoop_event *e, struct net *net, st
     return true;
 }
 
-static void construct_nei_event(struct tablesnoop_event *e, struct net_device *dev,
+static void construct_neigh_event(struct tablesnoop_event *e, struct net_device *dev,
                                 const void *pkey, int family, struct neighbour *neigh)
 {
     struct net *net = dev->nd_net.net;
     e->netns = net->net_cookie;
-    e->type = NEI;
-    e->nei.dev_type = dev->type;
-    e->nei.egress_ifidx = dev->ifindex;
-    e->nei.family = family;
+    e->type = NEIGH;
+    e->neigh.dev_type = dev->type;
+    e->neigh.egress_ifidx = dev->ifindex;
+    e->neigh.family = family;
 
     if (family == AF_INET) {
-        bpf_probe_read_kernel(&e->nei.next_hop_addr.ip4, 4, pkey);
+        bpf_probe_read_kernel(&e->neigh.next_hop_addr.ip4, 4, pkey);
     } else if (family == AF_INET6) {
-        bpf_probe_read_kernel(&e->nei.next_hop_addr.ip6, 16, pkey);
+        bpf_probe_read_kernel(&e->neigh.next_hop_addr.ip6, 16, pkey);
     }
 
     if (neigh) {
-        bpf_probe_read_kernel(e->nei.mac, 6, neigh->ha);
+        bpf_probe_read_kernel(e->neigh.mac, 6, neigh->ha);
     }
 }
 
@@ -690,9 +690,9 @@ int BPF_PROG(fexit_neigh_lookup, struct neigh_table *tbl, const void *pkey,
     if (!e)
         return BPF_OK;
 
-    construct_nei_event(e, dev, pkey, tbl->family, ret);
-    e->nei.event_type = NEIGH_LOOKUP;
-    e->nei.state = ret ? ret->nud_state : 0;
+    construct_neigh_event(e, dev, pkey, tbl->family, ret);
+    e->neigh.event_type = NEIGH_LOOKUP;
+    e->neigh.state = ret ? ret->nud_state : 0;
     e->success = ret != NULL;
     bpf_ringbuf_submit(e, 0);
 
@@ -710,9 +710,9 @@ int BPF_PROG(fexit_neigh_create, struct neigh_table *tbl, const void *pkey,
     if (!e)
         return BPF_OK;
 
-    construct_nei_event(e, dev, pkey, tbl->family, ret);
-    e->nei.event_type = NEIGH_CREATE;
-    e->nei.state = ret ? ret->nud_state : 0;
+    construct_neigh_event(e, dev, pkey, tbl->family, ret);
+    e->neigh.event_type = NEIGH_CREATE;
+    e->neigh.state = ret ? ret->nud_state : 0;
     e->success = ret != NULL;
     bpf_ringbuf_submit(e, 0);
 
@@ -730,9 +730,9 @@ int BPF_PROG(fexit_neigh_destroy, struct neighbour *neigh)
     if (!e)
         return BPF_OK;
 
-    construct_nei_event(e, dev, neigh->primary_key, neigh->tbl->family, neigh);
-    e->nei.event_type = NEIGH_DESTROY;
-    e->nei.state = neigh->nud_state;
+    construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family, neigh);
+    e->neigh.event_type = NEIGH_DESTROY;
+    e->neigh.state = neigh->nud_state;
     e->success = true;
     bpf_ringbuf_submit(e, 0);
 
@@ -751,9 +751,9 @@ int BPF_PROG(fexit_neigh_update, struct neighbour *neigh, const u8 *lladdr, u8 n
     if (!e)
         return BPF_OK;
 
-    construct_nei_event(e, dev, neigh->primary_key, neigh->tbl->family, neigh);
-    e->nei.event_type = NEIGH_UPDATE;
-    e->nei.state = new;
+    construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family, neigh);
+    e->neigh.event_type = NEIGH_UPDATE;
+    e->neigh.state = new;
     e->success = ret == 0;
     bpf_ringbuf_submit(e, 0);
 

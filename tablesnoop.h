@@ -70,7 +70,7 @@ enum event_type {
     FIB_V6,
     RULE,
     MPLS,
-    NEI,
+    NEIGH,
 };
 
 union ip46addr {
@@ -207,7 +207,7 @@ struct tablesnoop_event {
         struct fib_data fib;
         struct rule_data rule;
         struct mpls_data mpls;
-        struct neigh_data nei;
+        struct neigh_data neigh;
     };
     bool success : 1;
     bool cached : 1; // route came from a per-CPU dst_cache hit (no FIB lookup)

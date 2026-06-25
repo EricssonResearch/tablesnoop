@@ -364,30 +364,30 @@ static void print_neigh_event(const struct tablesnoop_event *e)
     if (!e->success && !env.show_lookup_fails)
         return;
 
-    if (e->nei.family == AF_INET) {
+    if (e->neigh.family == AF_INET) {
         printf("%sarp:" RESET, color_lookup_result(e));
         printf(" " ITA "packet" RESET);
-        print_ip46(" dst", AF_INET, &e->nei.next_hop_addr);
-    } else if (e->nei.family == AF_INET6) {
+        print_ip46(" dst", AF_INET, &e->neigh.next_hop_addr);
+    } else if (e->neigh.family == AF_INET6) {
         printf("%snd:" RESET, color_lookup_result(e));
         printf(" " ITA "packet" RESET);
-        print_ip46(" dst", AF_INET6, &e->nei.next_hop_addr);
+        print_ip46(" dst", AF_INET6, &e->neigh.next_hop_addr);
     } else {
-        printf(RED "error: invalid family %d\n" RESET, e->nei.family);
+        printf(RED "error: invalid family %d\n" RESET, e->neigh.family);
         return;
     }
 
     char iface[IFNAMSIZ];
-    if_netns_indextoname(iface, e->netns, e->nei.egress_ifidx);
+    if_netns_indextoname(iface, e->netns, e->neigh.egress_ifidx);
     printf(" dev " CYN "%s" RESET, iface);
-    printf(" type " YEL "%s" RESET, neigh_func(e->nei.event_type));
+    printf(" type " YEL "%s" RESET, neigh_func(e->neigh.event_type));
     printf(" " BLD "-->" RESET);
 
-    const unsigned char *mac = e->nei.mac;
+    const unsigned char *mac = e->neigh.mac;
     printf(" mac " MAG "%02x:%02x:%02x:%02x:%02x:%02x" RESET, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     
     if (verbose) {
-        printf(" state " YEL "%s" RESET, nud_state_str(e->nei.state));
+        printf(" state " YEL "%s" RESET, nud_state_str(e->neigh.state));
         printf(" netns " YEL "%lu" RESET, e->netns);
     }
 
@@ -412,7 +412,7 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
         break;
     case MPLS: print_mpls_event(e);
         break;
-    case NEI: print_neigh_event(e);
+    case NEIGH: print_neigh_event(e);
         break;
     default: fprintf(stderr, RED "unknown event type %d\n" RESET, e->type);
     }
