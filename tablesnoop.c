@@ -54,51 +54,6 @@ static void signal_handler(int signo)
 	exiting = true;
 }
 
-/* By default Linux uses a fast-path when no custom ip rules
- * exist. This skip fib_rules_lookup call, which breaks
- * tablesnoop's IPv4 FIB lookup to netns association logic.
- * As a workaround, let's insert and immediately remove a dummy
- * ip rule, just to force fib_rules_lookup call before FIB lookup.
- * */
-static bool force_rule_lookups(void)
-{
-#define BAIL(msg) perror(msg); return false;
-    char ns_path[NETNS_PATHLEN];
-    int ret = 0;
-    int fd;
-
-    for (size_t i = 0; i < array_get_size(netns_cache); i++) {
-        const struct netns_item *ns = array_peek(netns_cache, i);
-        snprintf(ns_path, NETNS_PATHLEN, fmt_proc_netns, ns->pid);
-
-        fd = open(ns_path, O_RDONLY);
-        if (fd < 0) {
-            BAIL("open");
-        }
-
-        if (setns(fd, CLONE_NEWNET) < 0) {
-            BAIL("setns to process");
-        }
-
-        ret += system("ip rule add protocol 255");
-        ret += system("ip -6 rule add protocol 255");
-        usleep(1000);
-        ret += system("ip rule del protocol 255");
-        ret += system("ip -6 rule del protocol 255");
-        if (ret) {
-            fprintf(stderr, RED "Failed to initialize tablesnoop, exiting...\n" RESET);
-            BAIL("system");
-        }
-
-        if (setns(my_netns_fd, CLONE_NEWNET) < 0) {
-            BAIL("setns back to original");
-        }
-
-        close(fd);
-    }
-
-    return true;
-}
 
 /* @returns: PID for the given netns inode number
  * or -1 if netns not in the cache */
@@ -475,16 +430,15 @@ static void print_fib_event(const struct tablesnoop_event *e)
         if (verbose) {
             if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
             if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
-            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET,
-                    iifstr, oifstr, e->fib.packet_dscp);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET
+                   " netns " YEL "%lu" RESET " table id " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp,
+                    e->netns, e->fib.fib_table_id);
         }
 
         if (e->success) {
             print_ip46(" " ITA "fib" RESET " key", AF_INET, &e->fib.fib_dst);
             printf(MAG "/%u" RESET, e->fib.fib_prefixlen);
-            if (verbose) {
-                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
-            }
         }
     } else {
         printf("%sfib6:" RESET " " ITA "packet" RESET, color_lookup_result(e));
@@ -493,16 +447,15 @@ static void print_fib_event(const struct tablesnoop_event *e)
         if (verbose) {
             if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
             if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
-            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET,
-                    iifstr, oifstr, e->fib.packet_dscp, e->fib.packet_flowlabel);
+            printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET
+                   " netns " YEL "%lu" RESET " table id " YEL "%u" RESET,
+                    iifstr, oifstr, e->fib.packet_dscp, e->fib.packet_flowlabel,
+                    e->netns, e->fib.fib_table_id);
         }
 
         if (e->success) {
             print_ip46(" " ITA "fib" RESET " key", AF_INET6, &e->fib.fib_dst);
             printf(BLU "/%u" RESET, e->fib.fib_prefixlen);
-            if (verbose) {
-                printf(" netns " YEL "%lu" RESET " table id " YEL "%u" RESET, e->netns, e->fib.fib_table_id);
-            }
         }
     }
 
@@ -706,14 +659,6 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
 
     netns_cache = create_netns_cache();
-    //if (verbose)
-    //    printf("Event size: %lu bytes\n", sizeof(struct tablesnoop_event));
-
-    //TODO we don't need this if we are not tracing rules (?)
-    if (force_rule_lookups() == false) {
-        ret = EXIT_FAILURE;
-        goto cleanup;
-    }
 
     obj = tablesnoop_bpf__open();
     if (!obj) {
@@ -729,7 +674,6 @@ int main(int argc, char *argv[])
         bpf_program__set_autoload(obj->progs.fexit_fib_rules_lookup, false);
     }
     if ((env.show_events & (SHOW_FIB4|SHOW_FIB6)) == 0) {
-        bpf_program__set_autoload(obj->progs.fexit_fib_get_table, false);
         bpf_program__set_autoload(obj->progs.fexit_fib_table_lookup, false);
     }
 

@@ -13,40 +13,69 @@
 #endif
 
 extern int LINUX_KERNEL_VERSION __kconfig;
+extern bool CONFIG_IP_MULTIPLE_TABLES __kconfig;
 extern const void net_namespace_list __ksym;
 
 #define IPV6_FLOWINFO_MASK              bpf_htonl(0x0FFFFFFF)
 #define IPV6_FLOWLABEL_MASK             bpf_htonl(0x000FFFFF)
 #define IPV6_TCLASS_SHIFT               20
 #define IPV6_TCLASS_MASK (IPV6_FLOWINFO_MASK & ~IPV6_FLOWLABEL_MASK)
+#define MAX_NETNS_COUNT                 1024
 
 struct {
     __uint (type, BPF_MAP_TYPE_RINGBUF);
     __uint (max_entries, 256 * 4096);
 } rb SEC (".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(key_size, sizeof(uintptr_t));
-    __uint(value_size, sizeof(unsigned long));
-    __uint(max_entries, 10);
-} hmap SEC(".maps");
-
 // Configuration set by userspace
 volatile struct environment env;
 
-static void list_all_netns_native()
+/* fib_table_lookup() do not have struct net argument, therefore
+ * we have to find out the network namespace from the struct fib_table.
+ * For that we reverted fib_get_table() and trace back the container struct net
+ * from the routing table id. This is possible, since the hash bucket index
+ * is table_id & (FIB_TABLE_HASHSZ - 1).
+ *
+ * Note: this only used for trace failed lookups. When the routing lookup
+ * is successful, struct fib_result.table is valid and netns is there.
+ * */
+static unsigned long fib4_table_netns(const struct fib_table *table)
 {
-    struct list_head *nslist = bpf_core_cast(&net_namespace_list, struct list_head);
-    struct list_head *iter = nslist->next;
-    bpf_repeat(1024) {
-        const struct net *net = bpf_core_cast(container_of(iter, struct net, list), struct net);
-        // bpf_printk("net: %p inode: %u cookie: %lu", net, net->ns.inum, net->net_cookie);
-        if (iter->next == nslist)
+    const unsigned FIB_TABLE_HASHSZ = CONFIG_IP_MULTIPLE_TABLES ? 256 : 2;
+    unsigned h = BPF_CORE_READ(table, tb_id) & (FIB_TABLE_HASHSZ - 1);
+
+    struct list_head *netns_list =
+        bpf_core_cast(&net_namespace_list, struct list_head);
+    struct list_head *iter = netns_list->next;
+
+    bpf_repeat(MAX_NETNS_COUNT) {
+        const struct net *netns = bpf_core_cast(
+            container_of(iter, struct net, list), struct net);
+
+        struct hlist_head *bucket = BPF_CORE_READ(netns, ipv4.fib_table_hash);
+        if (bucket == NULL)
+            return 0;
+
+        struct hlist_node *node = BPF_CORE_READ(bucket + h, first);
+        bpf_repeat(FIB_TABLE_HASHSZ) {
+
+            if (!node)
+                break;
+
+            if ((const void *) node == (const void *) table)
+                return BPF_CORE_READ(netns, net_cookie);
+
+            node = BPF_CORE_READ(node, next);
+        }
+
+        if (iter->next == netns_list)
             break;
         iter = iter->next;
     }
+
+    return 0;
 }
+
 
 static inline bool is_dscp_full_supported()
 {
@@ -414,15 +443,6 @@ SEC("fexit/fib_table_lookup")
 int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *flp,
              struct fib_result *res, int fib_flags, int ret)
 {
-    uintptr_t key = (uintptr_t)tb;
-    unsigned long *netns = bpf_map_lookup_elem(&hmap, &key);
-    if (!netns)
-        return BPF_OK;
-
-    // bpf_printk("fexit: table: %p %u", key, *inum);
-    if (env.filter_netns && env.my_netns_cookie != *netns)
-        return BPF_OK;
-
     if ((env.show_events & SHOW_FIB4) == 0)
         return BPF_OK;
     // bpf_printk("fib4 lookup %d", ret);
@@ -431,11 +451,17 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
     if (env.show_lookup_fails == false && success == false)
         return BPF_OK;
 
+    unsigned long netns;
+    if (success)
+        netns = BPF_CORE_READ(res, fi, fib_net, net_cookie);
+    else
+        netns = fib4_table_netns(tb);
+
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
-    construct_fib4_event(e, tb, flp, res, fib_flags, *netns, ret);
+    construct_fib4_event(e, tb, flp, res, fib_flags, netns, ret);
     e->success = success;
     bpf_ringbuf_submit(e, 0);
     return BPF_OK;
@@ -464,16 +490,6 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
     construct_fib6_event(e, net, table, oif, fl6, res, strict, ret);
     e->success = success;
     bpf_ringbuf_submit(e, 0);
-    return BPF_OK;
-}
-
-
-SEC("fexit/fib_get_table")
-int BPF_PROG(fexit_fib_get_table, struct net *net, u32 id, struct fib_table *ret)
-{
-    unsigned long netns = net->net_cookie;
-    uintptr_t key = (uintptr_t)ret;
-    bpf_map_update_elem(&hmap, &key, &netns, BPF_ANY);
     return BPF_OK;
 }
 
