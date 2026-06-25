@@ -68,6 +68,7 @@ enum event_type {
     FIB_V6,
     RULE,
     MPLS,
+    NEI,
 };
 
 union ip46addr {
@@ -178,6 +179,23 @@ struct mpls_data {
     char dev[IFNAMSIZ];
 };
 
+enum neigh_event_type {
+    NEIGH_CREATE,
+    NEIGH_UPDATE,
+    NEIGH_DESTROY,
+    NEIGH_LOOKUP,
+};
+
+struct neigh_data {
+    enum neigh_event_type event_type;
+    union ip46addr next_hop_addr;
+    unsigned int egress_ifidx;
+    unsigned short dev_type;
+    unsigned char mac[6];
+    unsigned char family;
+    unsigned char state;
+};
+
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
 struct tablesnoop_event {
@@ -187,6 +205,7 @@ struct tablesnoop_event {
         struct fib_data fib;
         struct rule_data rule;
         struct mpls_data mpls;
+        struct neigh_data nei;
     };
     bool success : 1;
     bool cached : 1; // route came from a per-CPU dst_cache hit (no FIB lookup)
