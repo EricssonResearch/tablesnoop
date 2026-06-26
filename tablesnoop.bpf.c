@@ -193,10 +193,7 @@ static void construct_fib4_event(struct tablesnoop_event *e, const struct net *n
                                  const struct fib_result *res, int fib_flags, int ret)
 {
     e->type = FIB_V4;
-    if (net)
-        e->netns = net->net_cookie;
-    else
-        e->netns = 0;
+    e->netns = net->net_cookie;
 
     e->fib.fib_dst.ip4.s_addr = res->prefix;
     e->fib.fib_prefixlen = res->prefixlen;
@@ -484,6 +481,9 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
         netns = bpf_core_cast(BPF_CORE_READ(res, fi, fib_net), struct net);
     else
         netns = bpf_core_cast(fib4_table_netns(tb), struct net);
+
+    if (env.filter_netns && env.my_netns_cookie != netns->net_cookie)
+        return BPF_OK;
 
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
