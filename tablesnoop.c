@@ -520,8 +520,11 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Module mpls_router not loaded, disabling mpls support\n");
         bpf_program__set_autoload(obj->progs.fentry_mpls_forward, false);
     }
-    if ((env.show_events & (SHOW_RULE4|SHOW_RULE6)) == 0) {
-        bpf_program__set_autoload(obj->progs.fexit_fib_rules_lookup, false);
+    if ((env.show_events & SHOW_RULE4) == 0) {
+        bpf_program__set_autoload(obj->progs.fentry_fib4_rule_action, false);
+    }
+    if ((env.show_events & SHOW_RULE6) == 0) {
+        bpf_program__set_autoload(obj->progs.fentry_fib6_rule_action, false);
     }
     if ((env.show_events & (SHOW_FIB4|SHOW_FIB6)) == 0) {
         bpf_program__set_autoload(obj->progs.fexit_fib_table_lookup, false);

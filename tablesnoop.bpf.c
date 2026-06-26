@@ -259,19 +259,19 @@ static void construct_fib6_event(struct tablesnoop_event *e, const struct net *n
 
 
 static void construct_fib_rule_event(struct tablesnoop_event *e, const struct flowi *fl,
-        const struct fib_rule *rule, const struct fib_rules_ops *ops)
+        const struct fib_rule *rule, int family, const struct net *net)
 {
     e->type = RULE;
-    e->netns = ops->fro_net->net_cookie;
+    e->netns = net->net_cookie;
 
-    e->rule.family = ops->family;
+    e->rule.family = family;
     e->rule.table = rule ? rule->table : 0;
 
-    if (ops->family == AF_INET) {
+    if (family == AF_INET) {
         const struct flowi4 *fl4 = bpf_core_cast(fl, struct flowi4);
         e->rule.packet_src.ip4.s_addr = fl4->saddr;
         e->rule.packet_dst.ip4.s_addr = fl4->daddr;
-    } else if (ops->family == AF_INET6) {
+    } else if (family == AF_INET6) {
         const struct flowi6 *fl6 = bpf_core_cast(fl, struct flowi6);
         e->rule.packet_src.ip6 = fl6->saddr;
         e->rule.packet_dst.ip6 = fl6->daddr;
@@ -289,7 +289,7 @@ static void construct_fib_rule_event(struct tablesnoop_event *e, const struct fl
     e->rule.l3mdev = rule->l3mdev;
     e->rule.goto_target = rule->target;
 
-    if (ops->family == AF_INET) {
+    if (family == AF_INET) {
         const struct fib4_rule *rule4 = bpf_core_cast(rule, struct fib4_rule);
         const struct fib4_rule___v6_12 *rule4_v6_12 = (void*)rule4;
         bool dscp_full4 = false;
@@ -312,7 +312,7 @@ static void construct_fib_rule_event(struct tablesnoop_event *e, const struct fl
             e->rule.dscp = rule4->dscp >> 2;
         }
 
-    } else if (ops->family == AF_INET6) {
+    } else if (family == AF_INET6) {
         struct fib6_rule *rule6 = bpf_core_cast(rule, struct fib6_rule);
         struct fib6_rule___v6_12 *rule6_v6_12 = (void*)rule6;
         bool dscp_full6 = false;
@@ -568,32 +568,58 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
 }
 
 
-SEC("fexit/fib_rules_lookup")
-int BPF_PROG(fexit_fib_rules_lookup, struct fib_rules_ops *ops, struct flowi *fl,
-             int flags, struct fib_lookup_arg *arg, int ret)
+/* Rule lookups are traced on the per-family action callback rather than on
+ * fib_rules_lookup(). The action (fib4_rule_action/fib6_rule_action) is invoked
+ * from inside fib_rules_lookup() for every rule whose selectors matched, and it
+ * runs *before* the nested fib_table_lookup() it triggers. Tracing it at fentry
+ * therefore:
+ *   - lets the rule event be emitted before the table-lookup event it causes,
+ *     so the ringbuf stream keeps the natural rule->table ordering (the fexit of
+ *     fib_rules_lookup() would always land after the table lookup, inverting it);
+ *   - always has a valid matched @rule (it is the first argument), so we never
+ *     have to deal with the rule==NULL / -ESRCH case the top-level probe had.
+ *
+ * Consequence: the action fires once per *candidate* rule (a lookup that walks
+ * several rules due to suppress/-EAGAIN emits one event per rule tried), and the
+ * final route verdict is not known here. We mark these events as a successful
+ * selector match; the overall route success/fail is carried by the fib table
+ * lookup events.
+ */
+static __always_inline int handle_rule_action(struct fib_rule *rule, struct flowi *fl, int family)
 {
-    if (env.filter_netns && env.my_netns_cookie != ops->fro_net->net_cookie)
+    struct net *net = rule->fr_net;
+
+    if (env.filter_netns && env.my_netns_cookie != net->net_cookie)
         return BPF_OK;
 
-    if (ops->family == AF_INET && (env.show_events & SHOW_RULE4) == 0)
-            return BPF_OK;
-    if (ops->family == AF_INET6 && (env.show_events & SHOW_RULE6) == 0)
-            return BPF_OK;
-
-    bool success = ret == 0;
-    if (env.show_lookup_fails == false && success == false)
+    if (family == AF_INET && (env.show_events & SHOW_RULE4) == 0)
+        return BPF_OK;
+    if (family == AF_INET6 && (env.show_events & SHOW_RULE6) == 0)
         return BPF_OK;
 
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
 
-    // note: on success fib_rules_lookup() sets arg->rule to the found one
-    construct_fib_rule_event(e, fl, arg->rule, ops);
-    e->success = success;
+    construct_fib_rule_event(e, fl, rule, family, net);
+    e->success = true; // the rule's selectors matched; its action is being attempted
     bpf_ringbuf_submit(e, 0);
 
     return BPF_OK;
+}
+
+SEC("fentry/fib4_rule_action")
+int BPF_PROG(fentry_fib4_rule_action, struct fib_rule *rule, struct flowi *flp,
+             int flags, struct fib_lookup_arg *arg)
+{
+    return handle_rule_action(rule, flp, AF_INET);
+}
+
+SEC("fentry/fib6_rule_action")
+int BPF_PROG(fentry_fib6_rule_action, struct fib_rule *rule, struct flowi *flp,
+             int flags, struct fib_lookup_arg *arg)
+{
+    return handle_rule_action(rule, flp, AF_INET6);
 }
 
 SEC("fentry/mpls_forward")
