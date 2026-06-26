@@ -191,7 +191,7 @@ enum neigh_event_type {
 struct neigh_data {
     enum neigh_event_type event_type;
     union ip46addr next_hop_addr;
-    unsigned int egress_ifidx;
+    char dev[IFNAMSIZ];
     unsigned short dev_type;
     unsigned char mac[6];
     unsigned char family;

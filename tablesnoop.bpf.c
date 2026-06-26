@@ -496,7 +496,7 @@ static void construct_neigh_event(struct tablesnoop_event *e, struct net_device 
     e->neigh.event_type = event_type;
     e->neigh.state = state;
     e->neigh.dev_type = dev->type;
-    e->neigh.egress_ifidx = dev->ifindex;
+    __builtin_memcpy(e->neigh.dev, dev->name, IFNAMSIZ);
     e->neigh.family = family;
 
     if (family == AF_INET) {

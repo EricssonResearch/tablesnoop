@@ -377,9 +377,7 @@ static void print_neigh_event(const struct tablesnoop_event *e)
         return;
     }
 
-    char iface[IFNAMSIZ];
-    if_netns_indextoname(iface, e->netns, e->neigh.egress_ifidx);
-    printf(" dev " CYN "%s" RESET, iface);
+    printf(" dev " CYN "%s" RESET, e->neigh.dev);
     printf(" type " YEL "%s" RESET, neigh_func(e->neigh.event_type));
     printf(" " BLD "-->" RESET);
 
