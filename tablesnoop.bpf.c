@@ -486,7 +486,8 @@ static bool construct_mpls_event(struct tablesnoop_event *e, struct net *net, st
 }
 
 static void construct_neigh_event(struct tablesnoop_event *e, struct net_device *dev, const void *pkey,
-    int family, struct neighbour *neigh, enum neigh_event_type event_type, unsigned char state, bool success)
+                                  int family, struct neighbour *neigh, enum neigh_event_type event_type,
+                                  unsigned char state, bool success)
 {
     struct net *net = dev->nd_net.net;
     e->netns = net->net_cookie;
@@ -693,8 +694,8 @@ int BPF_PROG(fexit_neigh_lookup, struct neigh_table *tbl, const void *pkey,
     if (!e)
         return BPF_OK;
 
-    construct_neigh_event(e, dev, pkey, tbl->family, ret, NEIGH_LOOKUP, ret ? ret->nud_state : 0,
-                          ret != NULL);
+    construct_neigh_event(e, dev, pkey, tbl->family, ret, NEIGH_LOOKUP,
+                          ret ? ret->nud_state : 0, ret != NULL);
     bpf_ringbuf_submit(e, 0);
 
     return BPF_OK;
@@ -711,8 +712,8 @@ int BPF_PROG(fexit_neigh_create, struct neigh_table *tbl, const void *pkey,
     if (!e)
         return BPF_OK;
 
-    construct_neigh_event(e, dev, pkey, tbl->family, ret, NEIGH_CREATE, ret ? ret->nud_state : 0,
-                          ret != NULL);
+    construct_neigh_event(e, dev, pkey, tbl->family, ret, NEIGH_CREATE,
+                          ret ? ret->nud_state : 0, ret != NULL);
     bpf_ringbuf_submit(e, 0);
 
     return BPF_OK;
@@ -729,8 +730,8 @@ int BPF_PROG(fexit_neigh_destroy, struct neighbour *neigh)
     if (!e)
         return BPF_OK;
 
-    construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family, neigh, NEIGH_DESTROY,
-                          neigh->nud_state, true);
+    construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family,
+                          neigh, NEIGH_DESTROY, neigh->nud_state, true);
     bpf_ringbuf_submit(e, 0);
 
     return BPF_OK;
@@ -748,8 +749,8 @@ int BPF_PROG(fexit_neigh_update, struct neighbour *neigh, const u8 *lladdr, u8 n
     if (!e)
         return BPF_OK;
 
-    construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family, neigh, NEIGH_UPDATE, new,
-                          ret == 0);
+    construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family,
+                          neigh, NEIGH_UPDATE, new, ret == 0);
     bpf_ringbuf_submit(e, 0);
 
     return BPF_OK;
