@@ -23,20 +23,6 @@
 #include "tablesnoop.h"
 #include "tablesnoop.skel.h"
 
-// strlen($/proc/sys/kernel/pid_max + 1 (\0))
-#define MAX_PIDLEN      8
-#define NETNS_PATHLEN   256
-
-const char *fmt_proc_netns = "/proc/%ld/ns/net";
-const char *fmt_netns_dir = "/var/run/netns/%s";
-const char *netns_dir = "/var/run/netns/";
-
-static pid_t child_processes[256];
-static int child_process_counter = 0;
-
-static struct array *netns_cache = NULL;
-static long my_netns_fd = -1; // we can switch back to the original netns with this
-
 static bool separate_on_timeout = false;
 static bool show_lwt = false;
 static bool verbose = false;
@@ -52,223 +38,6 @@ static void signal_handler(int signo)
 {
     (void) signo;
 	exiting = true;
-}
-
-
-/* @returns: PID for the given netns inode number
- * or -1 if netns not in the cache */
-static long get_pid_for_netns_inode(const struct array *cache, unsigned int netns_inode)
-{
-    size_t size = array_get_size(cache);
-    for (size_t i = 0; i < size; ++i) {
-        const struct netns_item *item = array_peek(cache, i);
-        if (item->ino == netns_inode) {
-            return item->pid;
-        }
-    }
-
-    return -1;
-}
-
-/* @returns: PID for the given netns cookie ID
- * or -1 if netns not in the cache */
-static long get_pid_for_netns(const struct array *cache, unsigned long netns)
-{
-    size_t size = array_get_size(cache);
-    for (size_t i = 0; i < size; ++i) {
-        const struct netns_item *item = array_peek(cache, i);
-        if (item->cookie == netns) {
-            return item->pid;
-        }
-    }
-
-    return -1;
-}
-
-static void run_proc_in_netns(void)
-{
-    char netns_path[NETNS_PATHLEN];
-    struct dirent *netns_entry;
-    DIR *netnsfs;
-
-    netnsfs = opendir(netns_dir);
-    if (!netnsfs) {
-        if (verbose) {
-            fprintf(stderr, "Info: no iproute2 net namespaces at %s\n", netns_dir);
-        }
-        return;
-    }
-
-    while ((netns_entry = readdir(netnsfs)) != NULL) {
-
-        if (*netns_entry->d_name == '.')
-            continue;
-
-        pid_t fpid = fork();
-        if (fpid == 0) { // child process
-
-            snprintf(netns_path, NETNS_PATHLEN - strlen(netns_entry->d_name), fmt_netns_dir, netns_entry->d_name);
-
-            int ns_fd = open(netns_path, O_RDONLY);
-            if (ns_fd < 0) {
-                fprintf(stderr, "Unable to open %s\n", netns_path);
-                goto error;
-            }
-
-            if (setns(ns_fd, CLONE_NEWNET) < 0) {
-                close(ns_fd);
-                perror("setns");
-                goto error;
-            }
-
-            pause(); // wait for stopping...
-
-error:
-            closedir(netnsfs);
-            close(ns_fd);
-            exiting = true;
-        } else {
-            child_processes[child_process_counter++] = fpid;
-        }
-    }
-    closedir(netnsfs);
-}
-
-/* Returns a cache with (netns_cookie, netns_inode, pid) tuples.
- * It scans through every PID in procfs and collect  from them.
- * Multiple processes can have the same netns, the
- * cache only stores every netns once with the smallest PID.
- * PID and inode required for enable global rule tracing,
- * for filtering we could use net_cookie only...
- * */
-static struct array *create_netns_cache(void)
-{
-    char netns_path[NETNS_PATHLEN];
-    struct array *cache = NULL;
-    struct stat netns_stat;
-    struct dirent *entry;
-    DIR *procfs;
-    int ret;
-
-    run_proc_in_netns();
-    procfs = opendir("/proc");
-    if (!procfs) {
-        perror("opendir");
-        goto out_procfs;
-    }
-
-    cache = array_init(32, sizeof(struct netns_item));
-    if (!cache) {
-        perror("Failed to allocate netns cache");
-        goto out_cache;
-    }
-
-    if (verbose)
-        printf("Build cache for netns to pid association...\n");
-
-    while ((entry = readdir(procfs)) != NULL) {
-        errno = 0;
-        if (entry->d_type != DT_DIR || !isdigit(entry->d_name[0]))
-            continue;
-
-        snprintf(netns_path, NETNS_PATHLEN, fmt_proc_netns, atol(entry->d_name));
-
-        ret = stat(netns_path, &netns_stat);
-        if (ret < 0)
-            continue;
-
-        ret = get_pid_for_netns_inode(cache, netns_stat.st_ino);
-        if (ret > 0)
-            continue;
-
-        int ns_fd = open(netns_path, O_RDONLY);
-        if (setns(ns_fd, CLONE_NEWNET) == -1) {
-            perror("setns");
-            close(ns_fd);
-        }
-
-        struct netns_item new_item = {
-            .ino = netns_stat.st_ino,
-            .pid = atol(entry->d_name),
-            .cookie = get_netns_cookie()
-        };
-
-        if (!array_add(cache, &new_item))
-            goto out_new_item;
-
-        //if(verbose)
-        //    printf("netns: %u pid: %ld cookie: %ld\n", new_item.ino, new_item.pid, new_item.cookie);
-    }
-
-    if (errno && !entry) {
-        perror("readdir");
-    }
-
-    closedir(procfs);
-    return cache;
-
-out_new_item:
-    array_free(cache);
-out_cache:
-    closedir(procfs);
-out_procfs:
-    return NULL;
-}
-
-/* Return netdevice name for interface index within a given
- * network namespace (also store it in @ifnamebuf)
- *
- * Note #1: uses a simple cache, to store successfully
- * resolved (netns_cookie, netns_inode, PID) tuples, rebuild the cache if needed
- *
- * TODO: use caching for ifindex to name resolution as well
- * */
-static char *if_netns_indextoname(char *ifnamebuf, unsigned long nsid, unsigned int if_index) {
-    char ns_path[NETNS_PATHLEN];
-    int fd = -1;
-    char *ret = ifnamebuf;
-
-    int pid = get_pid_for_netns(netns_cache, nsid);
-
-    if (pid < 0) {
-        if (netns_cache)
-            array_free(netns_cache);
-        netns_cache = create_netns_cache();
-
-        pid = get_pid_for_netns(netns_cache, nsid);
-        if (pid < 0) {
-            perror("unable to find pid for netns\n");
-            sprintf(ifnamebuf, "<%u>", if_index);
-            return NULL;
-        }
-    }
-
-    snprintf(ns_path, NETNS_PATHLEN, fmt_proc_netns, pid);
-    fd = open(ns_path, O_RDONLY);
-    if (fd < 0) {
-        perror("open");
-        sprintf(ifnamebuf, "<%u>", if_index);
-        return NULL;
-    }
-
-    if (setns(fd, CLONE_NEWNET) < 0) {
-        perror("setns to target");
-        sprintf(ifnamebuf, "<%u>", if_index);
-        close(fd);
-        return NULL;
-    }
-    close(fd);
-
-    if (if_indextoname(if_index, ifnamebuf) == NULL) {
-        sprintf(ifnamebuf, "<%u>", if_index);
-        ret = NULL;
-    }
-
-    if (setns(my_netns_fd, CLONE_NEWNET) < 0) {
-        perror("setns back to mine");
-    }
-
-    return ret;
 }
 
 static const char *color_lookup_result(const struct tablesnoop_event *e)
@@ -331,7 +100,7 @@ static inline const char *srv6_actid_to_name(int action_id)
 #define SEG6_F_LOCAL_FLV_NEXT_CSID      SEG6_F_LOCAL_FLV_OP(NEXT_CSID)
 #define SEG6_F_LOCAL_FLV_PSP            SEG6_F_LOCAL_FLV_OP(PSP)
 
-static void print_seg6local(unsigned long netns, int seg6action, const struct seg6local_data *s6l)
+static void print_seg6local(int seg6action, const struct seg6local_data *s6l)
 {
     printf(" action " YEL "%s" RESET, srv6_actid_to_name(seg6action));
 
@@ -349,11 +118,8 @@ static void print_seg6local(unsigned long netns, int seg6action, const struct se
     if (seg6action == SEG6_LOCAL_ACTION_END_DX6) {
         print_ip46(" nh6", AF_INET6, (void*)&s6l->nh6);
     }
-    if (s6l->oif) {
-        char oifstr[IFNAMSIZ];
-        if_netns_indextoname(oifstr, netns, s6l->oif);
-        printf(" oif " CYN "%s" RESET, oifstr);
-    }
+    if (*s6l->oif)
+        printf(" oif " CYN "%s" RESET, s6l->oif);
 
     if (s6l->flavor_ops & SEG6_F_LOCAL_FLV_PSP) {
         printf(" flavor " YEL "PSP" RESET);
@@ -364,7 +130,7 @@ static void print_seg6local(unsigned long netns, int seg6action, const struct se
     }
 }
 
-static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
+static void print_nexthop(const struct nexthop_data *nh)
 {
     printf(" " BLD "-->" RESET);
     if (nh->gw_family != AF_UNSPEC)
@@ -399,7 +165,7 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
         printf(" ]");
     }
     else if (nh->lwt_type == LWTUNNEL_ENCAP_SEG6_LOCAL) {
-        print_seg6local(netns, nh->lwt_seg6_mode, &nh->lwt_seg6local_data);
+        print_seg6local(nh->lwt_seg6_mode, &nh->lwt_seg6local_data);
     }
     else if (nh->lwt_type == LWTUNNEL_ENCAP_MPLS) {
         printf(" labels " YEL "%u" RESET, nh->lwt_mpls_data.labels);
@@ -417,9 +183,6 @@ static void print_nexthop(unsigned long netns, const struct nexthop_data *nh)
 
 static void print_fib_event(const struct tablesnoop_event *e)
 {
-    char iifstr[IFNAMSIZ];
-    char oifstr[IFNAMSIZ];
-
     if (!e->success && !env.show_lookup_fails)
         return;
 
@@ -428,11 +191,9 @@ static void print_fib_event(const struct tablesnoop_event *e)
         print_ip46(" src", AF_INET, &e->fib.packet_src);
         print_ip46(" dst", AF_INET, &e->fib.packet_dst);
         if (verbose) {
-            if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
-            if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
             printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET
                    " netns " YEL "%lu" RESET " table id " YEL "%u" RESET,
-                    iifstr, oifstr, e->fib.packet_dscp,
+                    e->fib.packet_iif, e->fib.packet_oif, e->fib.packet_dscp,
                     e->netns, e->fib.fib_table_id);
         }
 
@@ -445,11 +206,9 @@ static void print_fib_event(const struct tablesnoop_event *e)
         print_ip46(" src", AF_INET6, &e->fib.packet_src);
         print_ip46(" dst", AF_INET6, &e->fib.packet_dst);
         if (verbose) {
-            if_netns_indextoname(iifstr, e->netns, e->fib.packet_iif);
-            if_netns_indextoname(oifstr, e->netns, e->fib.packet_oif);
             printf(" iif " CYN "%s" RESET " oif " CYN "%s" RESET " dscp " YEL "%u" RESET " flowlabel " YEL "%u" RESET
                    " netns " YEL "%lu" RESET " table id " YEL "%u" RESET,
-                    iifstr, oifstr, e->fib.packet_dscp, e->fib.packet_flowlabel,
+                    e->fib.packet_iif, e->fib.packet_oif, e->fib.packet_dscp, e->fib.packet_flowlabel,
                     e->netns, e->fib.fib_table_id);
         }
 
@@ -460,7 +219,7 @@ static void print_fib_event(const struct tablesnoop_event *e)
     }
 
     if (e->success)
-        print_nexthop(e->netns, &e->fib.nh);
+        print_nexthop(&e->fib.nh);
     printf("\n");
 }
 
@@ -654,12 +413,6 @@ int main(int argc, char *argv[])
     if (verbose)
         printf("Original netns: %lu\n", env.my_netns_cookie);
 
-    my_netns_fd = get_netns_fd();
-    if (my_netns_fd < 0)
-        return EXIT_FAILURE;
-
-    netns_cache = create_netns_cache();
-
     obj = tablesnoop_bpf__open();
     if (!obj) {
         perror("Failed to open BPF object\n");
@@ -728,12 +481,7 @@ int main(int argc, char *argv[])
 
 cleanup:
     printf(RESET"\n"); //disable custom colors
-    close(my_netns_fd);
     ring_buffer__free(rb);
     tablesnoop_bpf__destroy(obj);
-    for (int i = 0; i < child_process_counter; ++i) {
-        kill(child_processes[i], SIGTERM);
-        waitpid(child_processes[i], NULL, 0);
-    }
     return ret;
 }
