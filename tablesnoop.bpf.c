@@ -31,6 +31,28 @@ struct {
 // Configuration set by userspace
 volatile struct environment env;
 
+/* (Per-CPU) temporary storage for fib events happening
+ * between rule action fentry/fexits.
+ * */
+struct rule_ctx {
+    bool in_rule_ctx;
+    bool pending_fib;
+    struct tablesnoop_event pending;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct rule_ctx);
+} rule_ctx_map SEC(".maps");
+
+static __always_inline struct rule_ctx *get_rule_ctx(void)
+{
+    __u32 zero = 0;
+    return bpf_map_lookup_elem(&rule_ctx_map, &zero);
+}
+
 /* fib_table_lookup() do not have struct net argument, therefore
  * we have to find out the network namespace from the struct fib_table.
  * For that we reverted fib_get_table() and trace back the container struct net
@@ -216,9 +238,8 @@ static void construct_fib4_event(struct tablesnoop_event *e, const struct net *n
 
 
 /* Fill the route key, table id and nexthop of a FIB_V6 event from a fib6_info.
- * Shared by the live fib6 lookup probe and the SRv6 cached-route probe. Uses
- * BPF_CORE_READ throughout so it works for both trusted pointers (lookup
- * result) and bpf_core_cast pointers (cached dst). */
+ * Shared by the live fib6 lookup probe and the SRv6 cached-route probe.
+ * */
 static void construct_fib6_route(struct tablesnoop_event *e, const struct net *net,
                                  struct fib6_info *f6i, const struct fib6_nh *nh,
                                  const struct fib6_table *table)
@@ -531,6 +552,15 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
     if (env.filter_netns && env.my_netns_cookie != netns->net_cookie)
         return BPF_OK;
 
+    // Called from rule action context, store the event without submitting
+    struct rule_ctx *rctx = get_rule_ctx();
+    if (rctx && rctx->in_rule_ctx) {
+        construct_fib4_event(&rctx->pending, netns, tb, flp, res, fib_flags, ret);
+        rctx->pending.success = success;
+        rctx->pending_fib = true;
+        return BPF_OK;
+    }
+
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
@@ -557,6 +587,15 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
     if (env.show_lookup_fails == false && success == false)
         return BPF_OK;
 
+    // Called from rule action context, store the event without submitting
+    struct rule_ctx *rctx = get_rule_ctx();
+    if (rctx && rctx->in_rule_ctx) {
+        construct_fib6_event(&rctx->pending, net, table, oif, fl6, res, strict, ret);
+        rctx->pending.success = success;
+        rctx->pending_fib = true;
+        return BPF_OK;
+    }
+
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
@@ -568,42 +607,72 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
 }
 
 
-/* Rule lookups are traced on the per-family action callback rather than on
- * fib_rules_lookup(). The action (fib4_rule_action/fib6_rule_action) is invoked
- * from inside fib_rules_lookup() for every rule whose selectors matched, and it
- * runs *before* the nested fib_table_lookup() it triggers. Tracing it at fentry
- * therefore:
- *   - lets the rule event be emitted before the table-lookup event it causes,
- *     so the ringbuf stream keeps the natural rule->table ordering (the fexit of
- *     fib_rules_lookup() would always land after the table lookup, inverting it);
- *   - always has a valid matched @rule (it is the first argument), so we never
- *     have to deal with the rule==NULL / -ESRCH case the top-level probe had.
- *
- * Consequence: the action fires once per *candidate* rule (a lookup that walks
- * several rules due to suppress/-EAGAIN emits one event per rule tried), and the
- * final route verdict is not known here. We mark these events as a successful
- * selector match; the overall route success/fail is carried by the fib table
- * lookup events.
+/* Called from fentry fib[46]_rule_action, to notify subseqeuent fib
+ * table lookup call if called from the rule action context.
+ * Uses a per-CPU flag to do that.
  */
-static __always_inline int handle_rule_action(struct fib_rule *rule, struct flowi *fl, int family)
+static __always_inline void rule_action_enter(void)
 {
+    struct rule_ctx *ctx = get_rule_ctx();
+    if (!ctx)
+        return;
+    ctx->in_rule_ctx = true;
+    ctx->pending_fib = false;
+}
+
+/* Callend when fib[46]_rule_action returns.
+* If there was a fib table lookup in between, we have a pending
+* fib table event stored and it should be submitted to the ringbuf
+* after the rule event. If has_pending=false there was no fib lookup
+* and we only submit the rule event (if not filtered by the user)
+*/
+static __always_inline int rule_action_exit(struct fib_rule *rule, struct flowi *fl,
+                                            int family, int ret)
+{
+    struct rule_ctx *ctx = get_rule_ctx();
+    bool has_pending = false;
+
+    if (ctx) {
+        has_pending = ctx->pending_fib;
+        ctx->in_rule_ctx = false;
+        ctx->pending_fib = false;
+    }
+
     struct net *net = rule->fr_net;
+    // A flag, not an early return: even a filtered-out rule must still flush
+    // the table event stashed below.
+    bool show_rule = true;
 
     if (env.filter_netns && env.my_netns_cookie != net->net_cookie)
-        return BPF_OK;
-
+        show_rule = false;
     if (family == AF_INET && (env.show_events & SHOW_RULE4) == 0)
-        return BPF_OK;
+        show_rule = false;
     if (family == AF_INET6 && (env.show_events & SHOW_RULE6) == 0)
-        return BPF_OK;
+        show_rule = false;
 
-    struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
-    if (!e)
-        return BPF_OK;
+    bool success = ret == 0;
+    if (env.show_lookup_fails == false && success == false)
+        show_rule = false;
 
-    construct_fib_rule_event(e, fl, rule, family, net);
-    e->success = true; // the rule's selectors matched; its action is being attempted
-    bpf_ringbuf_submit(e, 0);
+    // Emit the rule event first, then the table lookup it triggered.
+    if (show_rule) {
+        struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
+        if (e) {
+            construct_fib_rule_event(e, fl, rule, family, net);
+            e->success = success;
+            e->rule.err = ret;
+            bpf_ringbuf_submit(e, 0);
+        }
+    }
+
+    // Stashed table event was already filtered, so emit it unconditionally.
+    if (ctx && has_pending) {
+        struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
+        if (e) {
+            __builtin_memcpy(e, &ctx->pending, sizeof(*e));
+            bpf_ringbuf_submit(e, 0);
+        }
+    }
 
     return BPF_OK;
 }
@@ -612,14 +681,30 @@ SEC("fentry/fib4_rule_action")
 int BPF_PROG(fentry_fib4_rule_action, struct fib_rule *rule, struct flowi *flp,
              int flags, struct fib_lookup_arg *arg)
 {
-    return handle_rule_action(rule, flp, AF_INET);
+    rule_action_enter();
+    return BPF_OK;
+}
+
+SEC("fexit/fib4_rule_action")
+int BPF_PROG(fexit_fib4_rule_action, struct fib_rule *rule, struct flowi *flp,
+             int flags, struct fib_lookup_arg *arg, int ret)
+{
+    return rule_action_exit(rule, flp, AF_INET, ret);
 }
 
 SEC("fentry/fib6_rule_action")
 int BPF_PROG(fentry_fib6_rule_action, struct fib_rule *rule, struct flowi *flp,
              int flags, struct fib_lookup_arg *arg)
 {
-    return handle_rule_action(rule, flp, AF_INET6);
+    rule_action_enter();
+    return BPF_OK;
+}
+
+SEC("fexit/fib6_rule_action")
+int BPF_PROG(fexit_fib6_rule_action, struct fib_rule *rule, struct flowi *flp,
+             int flags, struct fib_lookup_arg *arg, int ret)
+{
+    return rule_action_exit(rule, flp, AF_INET6, ret);
 }
 
 SEC("fentry/mpls_forward")

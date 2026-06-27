@@ -84,6 +84,7 @@ struct rule_data {
 
     int family;
     unsigned table;
+    int err; // fib rule action return value: 0 == success, <0 == failure reason
 
     unsigned mark;
     unsigned pref;
