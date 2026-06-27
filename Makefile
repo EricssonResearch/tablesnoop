@@ -30,17 +30,14 @@ tablesnoop.bpf.o: tablesnoop.bpf.c vmlinux.h tablesnoop.h flavors.h
 tablesnoop.skel.h: tablesnoop.bpf.o
 	$(BPFTOOL) gen skeleton $^ > $@
 
-lib.a: lib.c lib.h
-	$(CC) $(STATIC) -g $(CFLAGS) -c $< -o $@
-
 tablesnoop.o: tablesnoop.c tablesnoop.skel.h tablesnoop.h
 	$(CC) $(STATIC) -g $(CFLAGS) -c $< -o $@
 
-tablesnoop: tablesnoop.o lib.a
-	$(CC) $(STATIC) -g $< -lbpf lib.a $(EXTRA_FLAGS) -o $@
+tablesnoop: tablesnoop.o
+	$(CC) $(STATIC) -g $< -lbpf $(EXTRA_FLAGS) -o $@
 
 install: tablesnoop
 	cp tablesnoop /usr/local/bin/
 
 clean:
-	rm *.a *.o *.skel.h vmlinux.h tablesnoop
+	rm *.o *.skel.h vmlinux.h tablesnoop

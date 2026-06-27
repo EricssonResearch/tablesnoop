@@ -19,7 +19,6 @@
 #include <linux/seg6_iptunnel.h>
 #include <linux/seg6_local.h>
 
-#include "lib.h"
 #include "tablesnoop.h"
 #include "tablesnoop.skel.h"
 
@@ -38,6 +37,26 @@ static void signal_handler(int signo)
 {
     (void) signo;
 	exiting = true;
+}
+
+unsigned long get_netns_cookie(void)
+{
+    int sk = socket(AF_INET, SOCK_STREAM, 0);
+    if (sk < 0) {
+        perror("socket");
+        return sk;
+    }
+
+    unsigned long cookie = -1;
+    socklen_t sz = sizeof(cookie);
+
+    if (getsockopt(sk, SOL_SOCKET, SO_NETNS_COOKIE, &cookie, &sz) != 0) {
+        perror("getsockopt");
+    }
+
+    close(sk);
+
+    return cookie;
 }
 
 static const char *color_lookup_result(const struct tablesnoop_event *e)
