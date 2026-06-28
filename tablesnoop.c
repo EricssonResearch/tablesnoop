@@ -8,6 +8,7 @@
 #include <argp.h>
 #include <arpa/inet.h>
 #include <stdlib.h>
+#include <string.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -106,6 +107,17 @@ static inline const char *srv6_actid_to_name(int action_id)
         return "invalid";
 
     return action_names[action_id];
+}
+
+static inline const char *rule_fail_reason(int err)
+{
+    switch (err) {
+    case -EAGAIN:       return "no route in table";
+    case -ENETUNREACH:  return "unreachable";
+    case -EACCES:       return "prohibit";
+    case -EINVAL:       return "blackhole";
+    default:            return strerror(-err);
+    }
 }
 
 // copied from include/vdso/bits.h and include/uapi/linux/const.h
@@ -259,35 +271,36 @@ static void print_rule_event(const struct tablesnoop_event *e)
     print_ip46(" src", e->rule.family, &e->rule.packet_src);
     print_ip46(" dst", e->rule.family, &e->rule.packet_dst);
 
-    if (e->success) {
-        printf(" " ITA "rule" RESET " pref " YEL "%u" RESET " table " YEL "%u" RESET,
-                e->rule.pref, e->rule.table);
+    printf(" " ITA "rule" RESET " pref " YEL "%u" RESET " table " YEL "%u" RESET,
+            e->rule.pref, e->rule.table);
 
-        if (e->rule.src_len) {
-            print_ip46(" src", e->rule.family, &e->rule.src);
-            printf("%s/%u" RESET, e->rule.family == AF_INET ? MAG : BLU, e->rule.src_len);
-        }
-        if (e->rule.dst_len) {
-            print_ip46(" dst", e->rule.family, &e->rule.dst);
-            printf("%s/%u" RESET, e->rule.family == AF_INET ? MAG : BLU, e->rule.dst_len);
-        }
-
-        if (verbose) {
-            printf(" netns " YEL "%lu" RESET, e->netns);
-            if (e->rule.iifname[0])
-                printf(" iif " CYN "%s" RESET, e->rule.iifname);
-            if (e->rule.oifname[0])
-                printf(" oif " CYN "%s" RESET, e->rule.oifname);
-            if (e->rule.mark)
-                printf(" mark " YEL "%u" RESET, e->rule.mark);
-            if (e->rule.dscp)
-                printf(" dscp " YEL "%u" RESET, e->rule.dscp);
-            if (e->rule.l3mdev)
-                printf(" l3mdev " YEL "%u" RESET, e->rule.l3mdev);
-            if (e->rule.goto_target)
-                printf(" goto " YEL "%u" RESET, e->rule.goto_target);
-        }
+    if (e->rule.src_len) {
+        print_ip46(" src", e->rule.family, &e->rule.src);
+        printf("%s/%u" RESET, e->rule.family == AF_INET ? MAG : BLU, e->rule.src_len);
     }
+    if (e->rule.dst_len) {
+        print_ip46(" dst", e->rule.family, &e->rule.dst);
+        printf("%s/%u" RESET, e->rule.family == AF_INET ? MAG : BLU, e->rule.dst_len);
+    }
+
+    if (verbose) {
+        printf(" netns " YEL "%lu" RESET, e->netns);
+        if (e->rule.iifname[0])
+            printf(" iif " CYN "%s" RESET, e->rule.iifname);
+        if (e->rule.oifname[0])
+            printf(" oif " CYN "%s" RESET, e->rule.oifname);
+        if (e->rule.mark)
+            printf(" mark " YEL "%u" RESET, e->rule.mark);
+        if (e->rule.dscp)
+            printf(" dscp " YEL "%u" RESET, e->rule.dscp);
+        if (e->rule.l3mdev)
+            printf(" l3mdev " YEL "%u" RESET, e->rule.l3mdev);
+        if (e->rule.goto_target)
+            printf(" goto " YEL "%u" RESET, e->rule.goto_target);
+    }
+
+    if (!e->success)
+        printf(RED " -> %s" RESET, rule_fail_reason(e->rule.err));
 
     printf("\n");
 }
@@ -520,15 +533,21 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Module mpls_router not loaded, disabling mpls support\n");
         bpf_program__set_autoload(obj->progs.fentry_mpls_forward, false);
     }
-    if ((env.show_events & (SHOW_RULE4|SHOW_RULE6)) == 0) {
-        bpf_program__set_autoload(obj->progs.fexit_fib_rules_lookup, false);
+    if ((env.show_events & SHOW_RULE4) == 0) {
+        bpf_program__set_autoload(obj->progs.fentry_fib4_rule_action, false);
+        bpf_program__set_autoload(obj->progs.fexit_fib4_rule_action, false);
     }
-    if ((env.show_events & (SHOW_FIB4|SHOW_FIB6)) == 0) {
+    if ((env.show_events & SHOW_RULE6) == 0) {
+        bpf_program__set_autoload(obj->progs.fentry_fib6_rule_action, false);
+        bpf_program__set_autoload(obj->progs.fexit_fib6_rule_action, false);
+    }
+    if ((env.show_events & SHOW_FIB4) == 0) {
         bpf_program__set_autoload(obj->progs.fexit_fib_table_lookup, false);
     }
     if ((env.show_events & SHOW_FIB6) == 0) {
         // SRv6 cached-route probe only makes sense for IPv6 FIB tracing
         bpf_program__set_autoload(obj->progs.fexit_seg6_do_srh, false);
+        bpf_program__set_autoload(obj->progs.fexit_fib6_table_lookup, false);
     }
     if ((env.show_events & SHOW_NEIGH) == 0) {
         bpf_program__set_autoload(obj->progs.fexit_neigh_lookup, false);
