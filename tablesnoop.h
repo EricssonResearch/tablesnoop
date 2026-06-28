@@ -189,6 +189,7 @@ struct tablesnoop_event {
         struct mpls_data mpls;
     };
     bool success : 1;
+    bool cached : 1; // route came from a per-CPU dst_cache hit (no FIB lookup)
 };
 
 

@@ -239,6 +239,8 @@ static void print_fib_event(const struct tablesnoop_event *e)
 
     if (e->success)
         print_nexthop(&e->fib.nh);
+    if (e->cached)
+        printf(" " YEL "cached" RESET);
     printf("\n");
 }
 
@@ -447,6 +449,10 @@ int main(int argc, char *argv[])
     }
     if ((env.show_events & (SHOW_FIB4|SHOW_FIB6)) == 0) {
         bpf_program__set_autoload(obj->progs.fexit_fib_table_lookup, false);
+    }
+    if ((env.show_events & SHOW_FIB6) == 0) {
+        // SRv6 cached-route probe only makes sense for IPv6 FIB tracing
+        bpf_program__set_autoload(obj->progs.fexit_seg6_do_srh, false);
     }
 
     if (tablesnoop_bpf__load(obj)) {

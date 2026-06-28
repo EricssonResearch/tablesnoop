@@ -103,7 +103,8 @@ make static
 ## Limitations
 
 * Workaround for network namespace lookups
-* Lookups may not traced for tunneling cases (see `dst_cache_get` calls in Linux)
+* Lookups may not traced for tunneling cases (see `dst_cache_get` calls in Linux).
+  SRv6 (`seg6`) cached lookups are traced and shown with a `cached` marker.
 
 ## Similar tools
 
