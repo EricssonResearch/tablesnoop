@@ -324,6 +324,74 @@ static void print_mpls_event(const struct tablesnoop_event *e)
     printf("\n");
 }
 
+#define NUD_INCOMPLETE  0x01
+#define NUD_REACHABLE   0x02
+#define NUD_STALE       0x04
+#define NUD_DELAY       0x08
+#define NUD_PROBE       0x10
+#define NUD_FAILED      0x20
+#define NUD_NOARP       0x40
+#define NUD_PERMANENT   0x80
+
+static inline const char *nud_state_str(unsigned char state)
+{
+    switch (state) {
+    case NUD_INCOMPLETE: return "incomplete";
+    case NUD_REACHABLE:  return "reachable";
+    case NUD_STALE:      return "stale";
+    case NUD_DELAY:      return "delay";
+    case NUD_PROBE:      return "probe";
+    case NUD_FAILED:     return "failed";
+    case NUD_NOARP:      return "noarp";
+    case NUD_PERMANENT:  return "permanent";
+    default:             return "unknown";
+    }
+}
+
+static inline const char *neigh_func(unsigned int func)
+{
+    switch (func) {
+    case NEIGH_CREATE:   return "create";
+    case NEIGH_UPDATE:   return "update";
+    case NEIGH_DESTROY:  return "destroy";
+    case NEIGH_LOOKUP:   return "lookup";
+    default:             return "unknown";
+    }
+}
+
+static void print_neigh_event(const struct tablesnoop_event *e)
+{
+    if (!e->success && !env.show_lookup_fails)
+        return;
+
+    if (e->neigh.family == AF_INET) {
+        printf("%sarp:" RESET, color_lookup_result(e));
+        printf(" " ITA "packet" RESET);
+        print_ip46(" dst", AF_INET, &e->neigh.next_hop_addr);
+    } else if (e->neigh.family == AF_INET6) {
+        printf("%snd:" RESET, color_lookup_result(e));
+        printf(" " ITA "packet" RESET);
+        print_ip46(" dst", AF_INET6, &e->neigh.next_hop_addr);
+    } else {
+        printf(RED "error: invalid family %d\n" RESET, e->neigh.family);
+        return;
+    }
+
+    printf(" dev " CYN "%s" RESET, e->neigh.dev);
+    printf(" type " YEL "%s" RESET, neigh_func(e->neigh.event_type));
+    printf(" " BLD "-->" RESET);
+
+    const unsigned char *mac = e->neigh.mac;
+    printf(" mac " MAG "%02x:%02x:%02x:%02x:%02x:%02x" RESET, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    if (verbose) {
+        printf(" state " YEL "%s" RESET, nud_state_str(e->neigh.state));
+        printf(" netns " YEL "%lu" RESET, e->netns);
+    }
+
+    printf("\n");
+}
+
 static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
 {
     //TODO can this happen??
@@ -341,6 +409,8 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
     case RULE: print_rule_event(e);
         break;
     case MPLS: print_mpls_event(e);
+        break;
+    case NEIGH: print_neigh_event(e);
         break;
     default: fprintf(stderr, RED "unknown event type %d\n" RESET, e->type);
     }
@@ -371,6 +441,11 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
         if (env.show_events == SHOW_EVERYTHING)
             env.show_events = 0;
         env.show_events |= SHOW_RULE6;
+        break;
+    case OPT_NEIGH:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_NEIGH;
         break;
     case 'g':
         env.filter_netns = false;
@@ -419,6 +494,7 @@ int main(int argc, char *argv[])
         { "fib6", OPT_FIB6, 0, 0, "Show only IPv6 FIB lookups", 0},
         { "rule4", OPT_RULE4, 0, 0, "Show only IPv4 rule lookups", 0},
         { "rule6", OPT_RULE6, 0, 0, "Show only IPv6 rule lookups", 0},
+        { "neigh", OPT_NEIGH, 0, 0, "Show only neighbor lookups", 0},
         { "global", 'g', 0, 0, "Collect events from all network namespaces (global).", 0},
         { "lwt", 'l', 0, 0, "Show LightWeight Tunnel info (off by default", 0},
         { "verbose", 'v', 0, 0, "Enable detailed output.", 0},
@@ -453,6 +529,12 @@ int main(int argc, char *argv[])
     if ((env.show_events & SHOW_FIB6) == 0) {
         // SRv6 cached-route probe only makes sense for IPv6 FIB tracing
         bpf_program__set_autoload(obj->progs.fexit_seg6_do_srh, false);
+    }
+    if ((env.show_events & SHOW_NEIGH) == 0) {
+        bpf_program__set_autoload(obj->progs.fexit_neigh_lookup, false);
+        bpf_program__set_autoload(obj->progs.fexit_neigh_create, false);
+        bpf_program__set_autoload(obj->progs.fexit_neigh_destroy, false);
+        bpf_program__set_autoload(obj->progs.fexit_neigh_update, false);
     }
 
     if (tablesnoop_bpf__load(obj)) {

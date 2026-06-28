@@ -11,6 +11,7 @@ For tools dedicated for packet level tracing see the [similar tools](#similar-to
 
 * IPv4 and IPv6 route lookup tracing
 * IPv4 and IPv6 rule (policy) lookup tracing
+* Neighbour table tracing (ARP/ND)
 * Tunnel tracing (SRv6, MPLS)
 * Lookup failure tracing (e.g.: no route or policy for packet)
 * Verbose logging with extended namespace, interface and rule info
@@ -131,7 +132,7 @@ Collect many info and very verbose, supports PCAP output.
   - [x] MPLS
   - [ ] VXLAN
 - [ ] Neighbor table lookups
-  - [ ] ARP/ND
+  - [x] ARP/ND
   - [ ] FDB
 - [ ] Netfilter lookups (nftables/iptables)
 - [ ] Improve compatibility

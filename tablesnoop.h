@@ -42,12 +42,14 @@ enum opts {
     OPT_FIB6,
     OPT_RULE4,
     OPT_RULE6,
+    OPT_NEIGH,
 };
 
 #define SHOW_RULE4 0x01u
 #define SHOW_RULE6 0x02u
 #define SHOW_FIB4  0x04u
 #define SHOW_FIB6  0x08u
+#define SHOW_NEIGH 0x10u
 #define SHOW_EVERYTHING 0xffffffffu
 
 struct environment {
@@ -68,6 +70,7 @@ enum event_type {
     FIB_V6,
     RULE,
     MPLS,
+    NEIGH,
 };
 
 union ip46addr {
@@ -178,6 +181,23 @@ struct mpls_data {
     char dev[IFNAMSIZ];
 };
 
+enum neigh_event_type {
+    NEIGH_CREATE,
+    NEIGH_UPDATE,
+    NEIGH_DESTROY,
+    NEIGH_LOOKUP,
+};
+
+struct neigh_data {
+    enum neigh_event_type event_type;
+    union ip46addr next_hop_addr;
+    char dev[IFNAMSIZ];
+    unsigned short dev_type;
+    unsigned char mac[6];
+    unsigned char family;
+    unsigned char state;
+};
+
 // structure for kernelspace -> userspace messaging
 // with BPF ringbuffer
 struct tablesnoop_event {
@@ -187,6 +207,7 @@ struct tablesnoop_event {
         struct fib_data fib;
         struct rule_data rule;
         struct mpls_data mpls;
+        struct neigh_data neigh;
     };
     bool success : 1;
     bool cached : 1; // route came from a per-CPU dst_cache hit (no FIB lookup)
