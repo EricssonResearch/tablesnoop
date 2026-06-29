@@ -1,11 +1,13 @@
 # tablesnoop
 
-This is a real-time observability tool for Linux kernel table lookups.
-Using eBPF probes, it taps into the forwarding information base (FIB) for lookups.
-and provides details about them.
-For example, it provides the source and destination addresses and the next-hop if the lookup was successful.
-While table lookups usually triggered by packets, this is not a packet level tracer.
-For tools dedicated for packet level tracing see the [similar tools](#similar-tools) section.
+Tablesnoop is a real-time observability tool for Linux kernel packet forwarding table lookups.
+This include IP routing lookup (v4 and v6), policy based routing rule lookups and more.
+
+The principle behind the tool is lookup level observability:
+forwarding of 1 packet can trigger multiple table lookups.
+Packet level tools like `tcpdump` or `wireshark` do not show such details.
+Function level tools (see [similar tools](#similar-tools) section) are useful for low
+level debugging but they too verbose quick network observability.
 
 ## Features
 
@@ -23,17 +25,17 @@ Root privileges are required for tracing.
 This requirement may be relaxed in the future.
 
 ```bash
-tablesnoop --help
 Usage: tablesnoop [OPTION...]
 
-  -4, --v4                   Use IPv4. By default, both IPv4 and IPv6 are logged.
-  -6, --v6                   Use IPv6. By default, both IPv4 and IPv6 are logged.
-  -g, --global               Collect events from all network namespace
-                             (global).
-      --route                Only display route lookups
-      --rule                 Only display rule lookups
-  -s, --separate             Insert empty line after a timeout.
-  -v, --verbose              Enable detailed output.
+      --fib4                 Show IPv4 FIB lookups
+      --fib6                 Show IPv6 FIB lookups
+  -g, --global               Collect events from all network namespaces
+  -l, --lwt                  Show LightWeight Tunnel info (off by default)
+      --neigh                Show neighbor lookups
+      --rule4                Show IPv4 rule lookups
+      --rule6                Show IPv6 rule lookups
+  -s, --separator            Print separator line after a timeout
+  -v, --verbose              Enable detailed output
   -x, --show_failed          Show failed lookup results
   -?, --help                 Give this help list
       --usage                Give a short usage message
@@ -43,20 +45,13 @@ To trace IPv4 routing table lookups including the failed ones,
 across all network namespaces use the following command:
 
 ```bash
-tablesnoop -4 -x -g
-fib4: packet src 10.11.0.12 dst 192.168.1.3
-fib4: packet src 10.11.0.12 dst 192.168.1.3 fib key 0.0.0.0/0 --> gw 10.148.80.1 dev wlp194s0
-rule4: packet src 10.11.0.12 dst 192.168.1.3 rule pref 32766 table 254
-fib4: packet src 192.168.1.3 dst 10.11.0.12 fib key 10.11.0.12/32 --> dev wlp194s0
-rule4: packet src 192.168.1.3 dst 10.11.0.12 rule pref 0 table 255
-fib4: packet src 10.11.0.12 dst 192.168.1.3
-fib4: packet src 10.11.0.12 dst 192.168.1.3 fib key 0.0.0.0/0 --> gw 10.148.80.1 dev wlp194s0
-rule4: packet src 10.11.0.12 dst 192.168.1.3 rule pref 32766 table 254
-fib4: packet src 10.100.42.22 dst 10.11.0.12 fib key 10.11.0.12/32 --> dev wlp194s0
-rule4: packet src 10.100.42.22 dst 10.11.0.12 rule pref 0 table 255
-fib4: packet src 10.11.0.12 dst 10.100.42.22
-fib4: packet src 10.11.0.12 dst 10.100.42.22 fib key 0.0.0.0/0 --> gw 10.148.80.1 dev wlp194s0
-rule4: packet src 10.11.0.12 dst 10.100.42.22 rule pref 32766 table 254
+tablesnoop --fib4 -x -g
+fib4: packet src 10.148.80.4 dst 1.1.1.1 fib key 0.0.0.0/0 --> gw 10.148.80.1 dev wlp194s0
+fib4: packet src 0.0.0.0 dst 1.1.1.1 fib key 0.0.0.0/0 --> gw 10.148.80.1 dev wlp194s0
+fib4: packet src 1.1.1.1 dst 10.148.80.4 fib key 10.148.80.4/32 --> dev wlp194s0
+fib4: packet src 10.148.80.4 dst 1.1.1.1 fib key 0.0.0.0/0 --> gw 10.148.80.1 dev wlp194s0
+fib4: packet src 0.0.0.0 dst 1.1.1.1 fib key 0.0.0.0/0 --> gw 10.148.80.1 dev wlp194s0
+fib4: packet src 1.1.1.1 dst 10.148.80.4 fib key 10.148.80.4/32 --> dev wlp194s0
 ```
 
 
@@ -73,13 +68,13 @@ Make sure all the dependencies installed.
 
 The exact package names may depending on distros.
 
-### Debian Trixie
+### Debian Trixie and above
 
 ```bash
 sudo apt install build-essential gcc-multilib clang bpftool libbpf-dev
 ```
 
-### Ubuntu 24.10, 25.04
+### Ubuntu 24.10 and above
 
 ```bash
 sudo apt install build-essential gcc-multilib clang linux-tools-common libbpf-dev
@@ -101,46 +96,24 @@ For building a self-contained static executable, use
 make static
 ```
 
-## Limitations
-
-* Workaround for network namespace lookups
-* Lookups may not traced for tunneling cases (see `dst_cache_get` calls in Linux).
-  SRv6 (`seg6`) cached lookups are traced and shown with a `cached` marker.
-
 ## Similar tools
 
-* [pwru](https://github.com/cilium/pwru) - packet level Linux kernel networking
-debugger and tracer. It taps on every kernel function which
-accepts `struct sk_buff` as a parameter and follow their execution.
+* `tcpdump` - packet level tracer. Less verbose than tablesnoop,
+show the packet on the wire sent or received by the interfaces.
+Does not provide info about failed forwarding.
+* [pwru](https://github.com/cilium/pwru) - function level Linux kernel networking debugger and tracer. It taps on every kernel function which accepts 
+`struct sk_buff`as a parameter and follow their execution.
 Useful for low-level debugging, troubleshooting regressions.
 Very verbose, depending on the traffic, a single packet can triggers
 dozens of functions in the network stack.
-* [ipftrace2](https://github.com/YutaroHayakawa/ipftrace2) - also a packet
+* [ipftrace2](https://github.com/YutaroHayakawa/ipftrace2) - also a function
 level debugger. It's interface similar to `ftrace` hence the name.
 It supports various output formats such as function graphs, JSON or user customized.
-* [retis](https://retis.readthedocs.io/en/stable/) - packet level tracer with many features.
+* [retis](https://retis.readthedocs.io/en/stable/) - function level tracer with many features.
 Supports drop reason tracing, packet tracking, conntrack status,
 netfilter handle info and many more.
 Live tracing and event collection for offline processing also possible.
 Collect many info and very verbose, supports PCAP output.
-
-
-## Potential improvements
-
-- [ ] Support Lightweight Tunnel types
-  - [x] SRv6
-  - [x] MPLS
-  - [ ] VXLAN
-- [ ] Neighbor table lookups
-  - [x] ARP/ND
-  - [ ] FDB
-- [ ] Netfilter lookups (nftables/iptables)
-- [ ] Improve compatibility
-  - [x] BTF based conditional struct member lookups
-  - [ ] Support older kernels
-- [ ] Improve kernel side
-  - [ ] Add netns parameter for IPv4 FIB lookups
-  - [ ] Net cookie or inode num based `setns`
 
 ### Authors
 

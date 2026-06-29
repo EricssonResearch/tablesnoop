@@ -503,15 +503,15 @@ int main(int argc, char *argv[])
     int ret = EXIT_SUCCESS;
     struct argp_option options[] =
     {
-        { "fib4", OPT_FIB4, 0, 0, "Show only IPv4 FIB lookups", 0},
-        { "fib6", OPT_FIB6, 0, 0, "Show only IPv6 FIB lookups", 0},
-        { "rule4", OPT_RULE4, 0, 0, "Show only IPv4 rule lookups", 0},
-        { "rule6", OPT_RULE6, 0, 0, "Show only IPv6 rule lookups", 0},
-        { "neigh", OPT_NEIGH, 0, 0, "Show only neighbor lookups", 0},
-        { "global", 'g', 0, 0, "Collect events from all network namespaces (global).", 0},
-        { "lwt", 'l', 0, 0, "Show LightWeight Tunnel info (off by default", 0},
-        { "verbose", 'v', 0, 0, "Enable detailed output.", 0},
-        { "separator", 's', 0, 0, "Print separator line after a timeout.", 0},
+        { "fib4", OPT_FIB4, 0, 0, "Show IPv4 FIB lookups", 0},
+        { "fib6", OPT_FIB6, 0, 0, "Show IPv6 FIB lookups", 0},
+        { "rule4", OPT_RULE4, 0, 0, "Show IPv4 rule lookups", 0},
+        { "rule6", OPT_RULE6, 0, 0, "Show IPv6 rule lookups", 0},
+        { "neigh", OPT_NEIGH, 0, 0, "Show neighbor lookups", 0},
+        { "global", 'g', 0, 0, "Collect events from all network namespaces", 0},
+        { "lwt", 'l', 0, 0, "Show LightWeight Tunnel info (off by default)", 0},
+        { "verbose", 'v', 0, 0, "Enable detailed output", 0},
+        { "separator", 's', 0, 0, "Print separator line after a timeout", 0},
         { "show_failed", 'x', 0, 0, "Show failed lookup results", 0},
         { 0 }
     };
