@@ -13,6 +13,7 @@ level debugging but they too verbose quick network observability.
 
 * IPv4 and IPv6 route lookup tracing
 * IPv4 and IPv6 rule (policy) lookup tracing
+* Bridge forwarding database (FDB) tracing
 * Neighbour table tracing (ARP/ND)
 * Tunnel tracing (SRv6, MPLS)
 * Lookup failure tracing (e.g.: no route or policy for packet)
@@ -27,6 +28,7 @@ This requirement may be relaxed in the future.
 ```bash
 Usage: tablesnoop [OPTION...]
 
+      --fdb                  Show forwarding database lookups
       --fib4                 Show IPv4 FIB lookups
       --fib6                 Show IPv6 FIB lookups
   -g, --global               Collect events from all network namespaces

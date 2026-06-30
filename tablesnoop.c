@@ -405,6 +405,51 @@ static void print_neigh_event(const struct tablesnoop_event *e)
     printf("\n");
 }
 
+#define BR_NO_STP 0
+#define BR_KERNEL_STP 1
+#define BR_USER_STP 2
+
+static inline const char *br_stp_state(unsigned int state)
+{
+    switch (state) {
+    case BR_NO_STP:     return "off";
+    case BR_KERNEL_STP: return "kernel";
+    case BR_USER_STP:   return "user";
+    default:            return "unknown";
+    }
+}
+
+static void print_fdb_event(const struct tablesnoop_event *e)
+{
+    if (!e->success && !env.show_lookup_fails)
+        return;
+        
+    printf("%sfdb:" RESET, color_lookup_result(e));
+    printf(" " ITA "packet" RESET);
+    
+    const unsigned char *src = e->fdb.src_mac;
+    const unsigned char *dst = e->fdb.dst_mac;
+    printf(" src " MAG "%02x:%02x:%02x:%02x:%02x:%02x" RESET, src[0], src[1], src[2], src[3], src[4], src[5]);
+    printf(" dst " MAG "%02x:%02x:%02x:%02x:%02x:%02x" RESET, dst[0], dst[1], dst[2], dst[3], dst[4], dst[5]);
+    printf(" bridge " CYN "%s" RESET, e->fdb.bridge);
+
+    if (verbose) {
+        printf(" stp " YEL "%s" RESET, br_stp_state(e->fdb.stp));
+    }
+
+    printf(" vid " YEL "%u" RESET, e->fdb.vid);
+    
+    if (verbose) {
+        printf(" origin " YEL "%s" RESET, e->fdb.origin ? "local" : "remote");
+        printf(" netns " YEL "%lu" RESET, e->netns);
+    }
+
+    printf(" " BLD "-->" RESET);
+    printf(" port " CYN "%s" RESET, e->fdb.port);
+
+    printf("\n");
+}
+
 static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data, size_t data_sz)
 {
     //TODO can this happen??
@@ -424,6 +469,8 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
     case MPLS: print_mpls_event(e);
         break;
     case NEIGH: print_neigh_event(e);
+        break;
+    case FDB: print_fdb_event(e);
         break;
     default: fprintf(stderr, RED "unknown event type %d\n" RESET, e->type);
     }
@@ -459,6 +506,11 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
         if (env.show_events == SHOW_EVERYTHING)
             env.show_events = 0;
         env.show_events |= SHOW_NEIGH;
+        break;
+    case OPT_FDB:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_FDB;
         break;
     case 'g':
         env.filter_netns = false;
@@ -508,6 +560,7 @@ int main(int argc, char *argv[])
         { "rule4", OPT_RULE4, 0, 0, "Show IPv4 rule lookups", 0},
         { "rule6", OPT_RULE6, 0, 0, "Show IPv6 rule lookups", 0},
         { "neigh", OPT_NEIGH, 0, 0, "Show neighbor lookups", 0},
+        { "fdb", OPT_FDB, 0, 0, "Show forwarding database lookups", 0},
         { "global", 'g', 0, 0, "Collect events from all network namespaces", 0},
         { "lwt", 'l', 0, 0, "Show LightWeight Tunnel info (off by default)", 0},
         { "verbose", 'v', 0, 0, "Enable detailed output", 0},
@@ -554,6 +607,9 @@ int main(int argc, char *argv[])
         bpf_program__set_autoload(obj->progs.fexit_neigh_create, false);
         bpf_program__set_autoload(obj->progs.fexit_neigh_destroy, false);
         bpf_program__set_autoload(obj->progs.fexit_neigh_update, false);
+    }
+    if ((env.show_events & SHOW_FDB) == 0) {
+        bpf_program__set_autoload(obj->progs.fexit___br_forward, false);
     }
 
     if (tablesnoop_bpf__load(obj)) {
