@@ -17,6 +17,7 @@ level debugging but they too verbose quick network observability.
 * Neighbour table tracing (ARP/ND)
 * Tunnel tracing (SRv6, MPLS)
 * Lookup failure tracing (e.g.: no route or policy for packet)
+* Event aggregation mode (group same lookups and show occurrence count)
 * Verbose logging with extended namespace, interface and rule info
 * Kernel-wide (global) or per-namespace tracing
 
@@ -28,6 +29,7 @@ This requirement may be relaxed in the future.
 ```bash
 Usage: tablesnoop [OPTION...]
 
+  -a, --aggregate            Event aggregation mode
       --fdb                  Show forwarding database lookups
       --fib4                 Show IPv4 FIB lookups
       --fib6                 Show IPv6 FIB lookups

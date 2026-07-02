@@ -23,16 +23,28 @@
 #include "tablesnoop.h"
 #include "tablesnoop.skel.h"
 
+#define MAX_EVENT_TRACKERS 4096
+
 static bool separate_on_timeout = false;
 static bool show_lwt = false;
 static bool verbose = false;
 static bool exiting = false;
+static bool aggregation_mode = false;
+static int num_tracked_events = 0;
 
 static struct environment env = {
     .filter_netns = true,
     .show_events = SHOW_EVERYTHING,
     .show_lookup_fails = false,
 };
+
+struct event_tracker {
+    unsigned long hash;  // FNV-1a hash of the event
+    unsigned long count; // number of occurrences
+    int line;            // display line index
+};
+
+static struct event_tracker event_tracker_entries[MAX_EVENT_TRACKERS];
 
 static void signal_handler(int signo)
 {
@@ -58,6 +70,38 @@ unsigned long get_netns_cookie(void)
     close(sk);
 
     return cookie;
+}
+
+static unsigned long hash_event(const struct tablesnoop_event *e)
+{
+    const unsigned char *data = (const unsigned char *)e;
+    unsigned long hash = 14695981039346656037UL; // FNV offset basis
+    for (size_t i = 0; i < sizeof(*e); i++) {
+        hash ^= data[i];
+        hash *= 1099511628211UL; // FNV prime
+    }
+    return hash;
+}
+
+static struct event_tracker *find_or_create_tracked_event(const struct tablesnoop_event *e)
+{
+    unsigned long h = hash_event(e);
+
+    for (int i = 0; i < num_tracked_events; i++) {
+        if (event_tracker_entries[i].hash == h)
+            return &event_tracker_entries[i];
+    }
+
+    if (num_tracked_events >= MAX_EVENT_TRACKERS) {
+        return NULL;
+    }
+
+    struct event_tracker *ent = &event_tracker_entries[num_tracked_events];
+    ent->hash = h;
+    ent->count = 0;
+    ent->line = num_tracked_events;
+    num_tracked_events++;
+    return ent;
 }
 
 static const char *color_lookup_result(const struct tablesnoop_event *e)
@@ -460,6 +504,24 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
 
     const struct tablesnoop_event *e = data;
 
+    int cursor_up = 0;
+    if (aggregation_mode) {
+        struct event_tracker *ev = find_or_create_tracked_event(e);
+        if (!ev) {
+            fprintf(stderr, RED "Error: too many unique events\n" RESET);
+            exiting = true;
+            return -1;
+        }
+        
+        ev->count++;
+        if (ev->count != 1) {
+            // existing line, so jump up and overwrite
+            cursor_up = num_tracked_events - ev->line;
+            printf("\033[%dA\033[2K\r", cursor_up);
+        }
+        printf("\t%lu ", ev->count);
+    }
+
     switch (e->type) {
     case FIB_V4:
     case FIB_V6: print_fib_event(e);
@@ -473,6 +535,15 @@ static int tablesnoop_event_cb(void *ctx __attribute_maybe_unused__, void *data,
     case FDB: print_fdb_event(e);
         break;
     default: fprintf(stderr, RED "unknown event type %d\n" RESET, e->type);
+    }
+
+    if (aggregation_mode && cursor_up > 1) {
+        // move cursor back down to the bottom
+        // -1 is needed because the print_* writes a '\n'
+        printf("\033[%dB\r", cursor_up - 1);
+    }
+    if (aggregation_mode) {
+        fflush(stdout);
     }
 
     return 0;
@@ -511,6 +582,9 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
         if (env.show_events == SHOW_EVERYTHING)
             env.show_events = 0;
         env.show_events |= SHOW_FDB;
+        break;
+    case 'a':
+        aggregation_mode = true;
         break;
     case 'g':
         env.filter_netns = false;
@@ -561,6 +635,7 @@ int main(int argc, char *argv[])
         { "rule6", OPT_RULE6, 0, 0, "Show IPv6 rule lookups", 0},
         { "neigh", OPT_NEIGH, 0, 0, "Show neighbor lookups", 0},
         { "fdb", OPT_FDB, 0, 0, "Show forwarding database lookups", 0},
+        { "aggregate", 'a', 0, 0, "Event aggregation mode", 0},
         { "global", 'g', 0, 0, "Collect events from all network namespaces", 0},
         { "lwt", 'l', 0, 0, "Show LightWeight Tunnel info (off by default)", 0},
         { "verbose", 'v', 0, 0, "Enable detailed output", 0},
