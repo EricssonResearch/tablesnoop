@@ -47,6 +47,7 @@ struct {
     __type(value, struct rule_ctx);
 } rule_ctx_map SEC(".maps");
 
+/* Note: the array is zero-initialized */
 static __always_inline struct rule_ctx *get_rule_ctx(void)
 {
     __u32 zero = 0;
@@ -96,7 +97,8 @@ static const struct net *fib4_table_netns(const struct fib_table *table)
     return 0;
 }
 
-/* Resolve ifindex to interface name within a netns*/
+/* Resolve ifindex to interface name within a netns.
+ * This replicates the functionailty of __dev_get_by_index() */
 static inline void get_ifname_netns(const struct net *netns, const int ifindex,
                                     char ifnamebuf[IFNAMSIZ])
 {
@@ -403,7 +405,6 @@ static struct mpls_route *mpls_route_input_rcu(struct net *net, unsigned int ind
     return platform_label[index]; //rcu_dereference(platform_label[index]);
 }
 
-// (why isn't this struct in vmlinux.h?)
 struct mpls_nh { /* next hop label forwarding entry */
         struct net_device       *nh_dev;
         netdevice_tracker       nh_dev_tracker;
@@ -421,7 +422,6 @@ struct mpls_nh { /* next hop label forwarding entry */
 };
 
 // see the comment about the memory layout of @rt_nh in net/mpls/internal.h
-// (why isn't this struct in vmlinux.h?)
 // linux/types.h: #define rcu_head callback_head
 struct mpls_route { /* next hop label forwarding entry */
         struct callback_head/*rcu_head*/         rt_rcu; // this struct is 2 pointers
@@ -836,7 +836,7 @@ int BPF_PROG(fexit_neigh_create, struct neigh_table *tbl, const void *pkey,
 {
     if (env.filter_netns && env.my_netns_cookie != dev->nd_net.net->net_cookie)
         return BPF_OK;
-    
+
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;

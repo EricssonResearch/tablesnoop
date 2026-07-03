@@ -217,7 +217,11 @@ setup_mpls() {
     ne tc qdisc add dev ethED ingress
 
     # 1. MPLS Routing (dual-stack tunnel, decap detects the IP version)
-    #    na ping 10.0.5.61 ; na ping fd05::61
+    #    The `via xxx` is only used for interface selection and MAC resolve.
+    #    We can use `via inet` or `via inet6` independently of the user traffic.
+    #    TTL: each hop decreases regardless of the label swapping.
+    #    na ping 10.0.5.61
+    #    na ping fd05::61
     nf ip addr add 10.0.5.61/24 dev ethFE
     nf ip addr add fd05::61/64  dev ethFE
     nb ip route    add 10.0.5.61/32  encap mpls 161 via inet  10.0.2.3
@@ -227,6 +231,11 @@ setup_mpls() {
     ne ip -f mpls route add 361        via inet6 fd05::61
 
     # 2. Label stacking with MPLS Routing
+    #    Encap can add multiple labels with `mpls x/y/z`.
+    #    Route can only match on the first label.
+    #    Using `as x/y/z` replaces the first label with the given stack.
+    #    Without `as x` the first label is popped.
+    #    It cannot pop more than one label at once.
     #    na ping 10.0.5.62 ; na ping fd05::62
     nf ip addr add 10.0.5.62/24 dev ethFE
     nf ip addr add fd05::62/64  dev ethFE
@@ -237,6 +246,8 @@ setup_mpls() {
     ne ip -f mpls route add 1162       via inet6 fd05::62
 
     # 3. Label swapping with Traffic Control (IPv6 only — pop needs a protocol)
+    #    Note that we still need the routing, tc can only do the label manipulation.
+    #    TTL: routing decreases it
     #    na ping fd05::63
     nf ip addr add fd05::63/64 dev ethFE
     nb tc filter add dev ethBA ingress protocol ipv6 flower dst_ip fd05::63/128 action mpls push label 163
@@ -304,21 +315,30 @@ setup_srv6() {
     for h in nb nc nd ne; do "$h" sysctl -wq net.ipv4.ip_forward=1; done
 
     # 1. Automatic End.DT46 (tunnel ends at an existing address of ne)
-    #    na ping fd05::61 ; na ping 10.0.5.61
+    #   If the destination address exists on the node and seg6_enabled=1
+    #    - segments_left>0 we get End (behaves like normal source routing)
+    #    - segments_left=0 we get End.DT46
+    #    na ping fd05::61
+    #    na ping 10.0.5.61
     nf ip addr add fd05::61/64  dev ethFE
     nf ip addr add 10.0.5.61/24 dev ethFE
     na ip -6 route add fd05::61/128  encap seg6 mode encap segs fd01::2,fd02::3,fd03::4,fd04::5 dev ethAB
     na ip route    add 10.0.5.61/32  encap seg6 mode encap segs fd01::2,fd02::3,fd03::4,fd04::5 dev ethAB
 
     # 2. End.DT6 with lwtunnel (tunnel ends at a non-existing address of ne)
+    #    We are using the RFC 9602 address range 5f00::/16 allocated to SRv6 SID.
+    #    The intermediate hops still use the automatic source routing.
+    #    Note that we must advertise this non-existing address so nd knows about it.
     #    na ping fd05::62
     nf ip addr add fd05::62/64 dev ethFE
     na ip -6 route add fd05::62/128   encap seg6 mode encap segs fd01::2,fd02::3,fd03::4,5f00:4::52 dev ethAB
     nd ip -6 route add 5f00:4::52/128 via fd04::5 dev ethDE
     ne ip -6 route add 5f00:4::52/128 encap seg6local action End.DT6 count table main dev ethED
 
-    # 3. End.DT46 with lwtunnel (outputs onto a VRF)
-    #    na ping fd05::63 ; na ping 10.0.5.63
+    # 3. End.DT46 with lwtunnel
+    #    This one and End.DT4 can only output onto a VRF.
+    #    na ping fd05::63
+    #    na ping 10.0.5.63
     nf ip addr add fd05::63/64  dev ethFE
     nf ip addr add 10.0.5.63/24 dev ethFE
     na ip -6 route add fd05::63/128   encap seg6 mode encap segs fd01::2,fd02::3,fd03::4,5f00:4::53 dev ethAB
@@ -346,7 +366,15 @@ setup_srv6() {
     ne ip -6 route add 5f00:4::55/128 encap seg6local action End.DX4 count nh4 10.0.5.65 dev ethED
 
     # 6. End.DX2 with lwtunnel (L2; encapsulate on nb, MAC must match ethBA/ethFE)
-    #    na ping fd05::66 ; na ping 10.0.5.66
+    #    This one does not work for locally originated packets, so we encapsulate on nb.
+    #    The MAC address handling is tricky. The DMAC of the packet sent by na must be
+    #    the one on ethBA or it won't be accepted and directed into the tunnel. Also, it
+    #    must be the one on ethFE, or it won't answer the ping request.
+    #    The kernel selftest solves this by seting the end host MAC on the tunnel entrace.
+    #    Note that this is not a true L2 tunnel, as it captures traffic on IP level, and
+    #    for example ARP doesn't enter the tunnel.
+    #    na ping fd05::66
+    #    na ping 10.0.5.66
     nf ip addr add fd05::66/64  dev ethFE
     nf ip addr add 10.0.5.66/24 dev ethFE
     nf ip link set address 0:5:0:0:0:6 dev ethFE
@@ -359,7 +387,11 @@ setup_srv6() {
     ne ip -6 route add 5f00:4::56/128 encap seg6local action End.DX2 count oif ethEF dev ethED
 
     # 7. End.DT46 with Reduced segment list (Linux 6.0+)
-    #    na ping fd05::67 ; na ping 10.0.5.67
+    #    Same as #2 but without adding the first hop to the SRH.
+    #    Note that normal IPv6 routing header processing rejects this SRH on nb,
+    #    we have to configure a SID with an End behavior for processing.
+    #    na ping fd05::67
+    #    na ping 10.0.5.67
     nf ip addr add fd05::67/64  dev ethFE
     nf ip addr add 10.0.5.67/24 dev ethFE
     na ip -6 route add 5f00:1::27/128 via fd01::2 dev ethAB
@@ -375,7 +407,13 @@ setup_srv6() {
     ne ip route    add 10.0.5.67/32 dev ethEF table 100
 
     # 8. End.DT46 with Compressed SID (Linux 6.1+)
-    #    na ping fd05::68 ; na ping 10.0.5.68
+    #    This one encodes multiple steps in one IPv6 address with a locator of `lblen` bits
+    #    and segments of `nflen` bits. On each hop one segment is shifted out of the segment
+    #    list by the End behavior, and we can route the packet based on the first `lblen+nflen` bits.
+    #    This can also be combined with Red to decrease the overhead even further.
+    #    We need a seg6local End on each hop to advance the CSID list.
+    #    na ping fd05::68
+    #    na ping 10.0.5.68
     nf ip addr add fd05::68/64  dev ethFE
     nf ip addr add 10.0.5.68/24 dev ethFE
     na ip -6 route add fd05::68/128 encap seg6 mode encap.red segs 5f00:68:0102:0203:0304:0405:: dev ethAB
@@ -391,6 +429,9 @@ setup_srv6() {
     ne ip route    add 10.0.5.68/32 dev ethEF table 100
 
     # 9. Inline with "flavor psp" on ne to remove the SRH (Linux 6.3+)
+    #    With inline we don't add an outer IPv6 header, just the SRH. On ne the
+    #    Penultimate Segment Pop flavor removes the SRH before handing over to nf.
+    #    Note that the response from nf would be the same if we didn't have the PSP.
     #    na ping fd05::69
     nf ip addr add fd05::69/64 dev ethFE
     na ip -6 route add fd05::69/128   encap seg6 mode inline segs fd01::2,fd02::3,fd03::4,5f00:4::59 dev ethAB
@@ -406,7 +447,7 @@ setup_srv6() {
     ne ip route    add default via 10.0.4.4 dev ethED
     nd ip route    add default via 10.0.3.3 dev ethDC
     nc ip route    add default via 10.0.2.2 dev ethCB
-    # disable Reverse Path Forwarding for the reverse IPv4 traffic
+    # disable Reverse Path Forwarding (RFC 3704) for the reverse IPv4 traffic
     ne sysctl -wq net.ipv4.conf.ethEF.rp_filter=0
     nd sysctl -wq net.ipv4.conf.ethDE.rp_filter=0
     nc sysctl -wq net.ipv4.conf.ethCD.rp_filter=0
