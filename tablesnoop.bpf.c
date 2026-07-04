@@ -573,6 +573,7 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
     // Called from rule action context, store the event without submitting
     struct rule_ctx *rctx = get_rule_ctx();
     if (rctx && rctx->in_rule_ctx) {
+        __builtin_memset(&rctx->pending, 0, sizeof(rctx->pending));
         construct_fib4_event(&rctx->pending, netns, tb, flp, res, fib_flags, ret);
         rctx->pending.success = success;
         rctx->pending_fib = true;
@@ -582,6 +583,7 @@ int BPF_PROG(fexit_fib_table_lookup, struct fib_table *tb, const struct flowi4 *
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     construct_fib4_event(e, netns, tb, flp, res, fib_flags, ret);
     e->success = success;
@@ -608,6 +610,7 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
     // Called from rule action context, store the event without submitting
     struct rule_ctx *rctx = get_rule_ctx();
     if (rctx && rctx->in_rule_ctx) {
+        __builtin_memset(&rctx->pending, 0, sizeof(rctx->pending));
         construct_fib6_event(&rctx->pending, net, table, oif, fl6, res, strict, ret);
         rctx->pending.success = success;
         rctx->pending_fib = true;
@@ -617,6 +620,7 @@ int BPF_PROG(fexit_fib6_table_lookup, struct net *net, struct fib6_table *table,
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     construct_fib6_event(e, net, table, oif, fl6, res, strict, ret);
     e->success = success;
@@ -676,6 +680,7 @@ static __always_inline int rule_action_exit(struct fib_rule *rule, struct flowi 
     if (show_rule) {
         struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
         if (e) {
+            __builtin_memset(e, 0, sizeof(*e));
             construct_fib_rule_event(e, fl, rule, family, net);
             e->success = success;
             e->rule.err = ret;
@@ -736,6 +741,7 @@ int BPF_PROG(fentry_mpls_forward, struct sk_buff *skb, struct net_device *dev,
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     //TODO can we skip submitting on no success?
     e->success = construct_mpls_event(e, net, skb);
@@ -778,6 +784,7 @@ int BPF_PROG(fexit_seg6_do_srh, struct sk_buff *skb, struct dst_entry *cache_dst
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     e->type = FIB_V6;
     e->netns = net->net_cookie;
@@ -822,6 +829,7 @@ int BPF_PROG(fexit_neigh_lookup, struct neigh_table *tbl, const void *pkey,
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     construct_neigh_event(e, dev, pkey, tbl->family, ret, NEIGH_LOOKUP,
                           ret ? ret->nud_state : 0, ret != NULL);
@@ -840,6 +848,7 @@ int BPF_PROG(fexit_neigh_create, struct neigh_table *tbl, const void *pkey,
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     construct_neigh_event(e, dev, pkey, tbl->family, ret, NEIGH_CREATE,
                           ret ? ret->nud_state : 0, ret != NULL);
@@ -858,6 +867,7 @@ int BPF_PROG(fexit_neigh_destroy, struct neighbour *neigh)
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family,
                           neigh, NEIGH_DESTROY, neigh->nud_state, true);
@@ -877,6 +887,7 @@ int BPF_PROG(fexit_neigh_update, struct neighbour *neigh, const u8 *lladdr, u8 n
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     construct_neigh_event(e, dev, neigh->primary_key, neigh->tbl->family,
                           neigh, NEIGH_UPDATE, new, ret == 0);
@@ -896,6 +907,7 @@ int BPF_PROG(fexit___br_forward, const struct net_bridge_port *to, struct sk_buf
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;
+    __builtin_memset(e, 0, sizeof(*e));
 
     unsigned char src_mac[6];
     unsigned char dst_mac[6];
