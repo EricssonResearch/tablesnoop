@@ -15,13 +15,14 @@
 #include <sys/wait.h>
 #include <sched.h>
 #include <search.h>
+#include <stdarg.h>
 
 #include <linux/lwtunnel.h>
 #include <linux/seg6_iptunnel.h>
 #include <linux/seg6_local.h>
 
+#include "common.h"
 #include "tablesnoop.h"
-#include "tablesnoop.skel.h"
 
 static bool separate_on_timeout = false;
 static bool show_lwt = false;
@@ -38,6 +39,56 @@ static void signal_handler(int signo)
 {
     (void) signo;
 	exiting = true;
+}
+
+// Load a feature, reusing the shared ring buffer map fd.
+static void load_feature(struct bpf_feature *f, struct environment *e, int rb_fd)
+{
+    printf("Loading %-8s module...  ", f->name);
+    fflush(stdout);
+
+    f->obj = f->open();
+    if (!f->obj) {
+        printf("[" RED "FAIL" RESET "] open failed\n");
+        return;
+    }
+
+    // Reuse the userspace-created ring buffer map
+    struct bpf_map *map = f->get_rb_map(f->obj);
+    if (bpf_map__reuse_fd(map, rb_fd) != 0) {
+        printf("[" RED "FAIL" RESET "] ringbuf reuse failed\n");
+        f->destroy(f->obj);
+        f->obj = NULL;
+        return;
+    }
+
+    if (f->load(f->obj) != 0) {
+        printf("[" YEL "SKIP" RESET "] not available on this kernel\n");
+        f->destroy(f->obj);
+        f->obj = NULL;
+        return;
+    }
+
+    f->set_env(f->obj, e);
+
+    if (f->attach(f->obj) != 0) {
+        printf("[" RED "FAIL" RESET "] attach failed\n");
+        f->destroy(f->obj);
+        f->obj = NULL;
+        return;
+    }
+
+    f->loaded = true;
+    printf("[" GRN " OK " RESET "]\n");
+}
+
+static void destroy_feature(struct bpf_feature *f)
+{
+    if (f->loaded) {
+        f->destroy(f->obj);
+        f->obj = NULL;
+        f->loaded = false;
+    }
 }
 
 unsigned long get_netns_cookie(void)
@@ -502,6 +553,16 @@ static int parse_opt(int key, char *arg, struct argp_state *state) {
             env.show_events = 0;
         env.show_events |= SHOW_RULE6;
         break;
+    case OPT_MPLS:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_MPLS;
+        break;
+    case OPT_SRV6:
+        if (env.show_events == SHOW_EVERYTHING)
+            env.show_events = 0;
+        env.show_events |= SHOW_SRV6;
+        break;
     case OPT_NEIGH:
         if (env.show_events == SHOW_EVERYTHING)
             env.show_events = 0;
@@ -548,10 +609,16 @@ bool module_loaded(const char *modname)
     return false;
 }
 
+static int __ignore_print(enum libbpf_print_level level, const char *fmt, va_list ap)
+{
+    (void)level; (void)fmt; (void)ap;
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     struct ring_buffer *rb = NULL;
-    struct tablesnoop_bpf *obj = NULL;
+    int rb_fd = -1;
     int ret = EXIT_SUCCESS;
     struct argp_option options[] =
     {
@@ -559,6 +626,8 @@ int main(int argc, char *argv[])
         { "fib6", OPT_FIB6, 0, 0, "Show IPv6 FIB lookups", 0},
         { "rule4", OPT_RULE4, 0, 0, "Show IPv4 rule lookups", 0},
         { "rule6", OPT_RULE6, 0, 0, "Show IPv6 rule lookups", 0},
+        { "mpls", OPT_MPLS, 0, 0, "Show MPLS lookups", 0},
+        { "srv6", OPT_SRV6, 0, 0, "Show SRv6 lookups", 0},
         { "neigh", OPT_NEIGH, 0, 0, "Show neighbor lookups", 0},
         { "fdb", OPT_FDB, 0, 0, "Show forwarding database lookups", 0},
         { "global", 'g', 0, 0, "Collect events from all network namespaces", 0},
@@ -576,71 +645,34 @@ int main(int argc, char *argv[])
     if (verbose)
         printf("Original netns: %lu\n", env.my_netns_cookie);
 
-    obj = tablesnoop_bpf__open();
-    if (!obj) {
-        perror("Failed to open BPF object\n");
-        ret = EXIT_FAILURE;
-        goto cleanup;
-    }
-    if (!module_loaded("mpls_router")) {
-        fprintf(stderr, "Module mpls_router not loaded, disabling mpls support\n");
-        bpf_program__set_autoload(obj->progs.fentry_mpls_forward, false);
-    }
-    if ((env.show_events & SHOW_RULE4) == 0) {
-        bpf_program__set_autoload(obj->progs.fentry_fib4_rule_action, false);
-        bpf_program__set_autoload(obj->progs.fexit_fib4_rule_action, false);
-    }
-    if ((env.show_events & SHOW_RULE6) == 0) {
-        bpf_program__set_autoload(obj->progs.fentry_fib6_rule_action, false);
-        bpf_program__set_autoload(obj->progs.fexit_fib6_rule_action, false);
-    }
-    if ((env.show_events & SHOW_FIB4) == 0) {
-        bpf_program__set_autoload(obj->progs.fexit_fib_table_lookup, false);
-    }
-    if ((env.show_events & SHOW_FIB6) == 0) {
-        // SRv6 cached-route probe only makes sense for IPv6 FIB tracing
-        bpf_program__set_autoload(obj->progs.fexit_seg6_do_srh, false);
-        bpf_program__set_autoload(obj->progs.fexit_fib6_table_lookup, false);
-    }
-    if ((env.show_events & SHOW_NEIGH) == 0) {
-        bpf_program__set_autoload(obj->progs.fexit_neigh_lookup, false);
-        bpf_program__set_autoload(obj->progs.fexit_neigh_create, false);
-        bpf_program__set_autoload(obj->progs.fexit_neigh_destroy, false);
-        bpf_program__set_autoload(obj->progs.fexit_neigh_update, false);
-    }
-    if ((env.show_events & SHOW_FDB) == 0) {
-        bpf_program__set_autoload(obj->progs.fexit___br_forward, false);
-    }
-
-    if (tablesnoop_bpf__load(obj)) {
-        perror("Failed to load BPF object\n");
-        ret = EXIT_FAILURE;
-        goto cleanup;
-    }
-
-    ret = tablesnoop_bpf__attach(obj);
-    if (ret) {
-        perror("Failed to attach BPF programs\n");
-        ret = EXIT_FAILURE;
-        goto cleanup;
-
-    }
-
-    // Share struct environment config options with the kernel
-    obj->bss->env = env;
-
     if (signal(SIGINT, signal_handler) == SIG_ERR) {
         perror("Unable to setup signal handler\n");
         ret = EXIT_FAILURE;
         goto cleanup;
     }
 
-    rb = ring_buffer__new(bpf_map__fd(obj->maps.rb), tablesnoop_event_cb, NULL, NULL);
-	if (!rb) {
-		ret = EXIT_FAILURE;
-		perror("Failed to create ring buffer\n");
-		goto cleanup;
-	}
+    // Suppress libbpf errors — we handle failures ourselves
+    libbpf_set_print(__ignore_print);
+
+    struct bpf_map_create_opts rb_opts = { .sz = sizeof(struct bpf_map_create_opts) };
+    rb_fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, "rb", 0, 0, 256 * 4096, &rb_opts);
+    if (rb_fd < 0) {
+        perror("Failed to create ring buffer map");
+        ret = EXIT_FAILURE;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < FEATURE_COUNT; i++) {
+        if (env.show_events & features[i].show_flag)
+            load_feature(&features[i], &env, rb_fd);
+    }
+
+    rb = ring_buffer__new(rb_fd, tablesnoop_event_cb, NULL, NULL);
+    if (!rb) {
+        ret = EXIT_FAILURE;
+        perror("Failed to create ring buffer\n");
+        goto cleanup;
+    }
 
     bool print_separator = false;
     while (!exiting) {
@@ -664,6 +696,9 @@ int main(int argc, char *argv[])
 cleanup:
     printf(RESET"\n"); //disable custom colors
     ring_buffer__free(rb);
-    tablesnoop_bpf__destroy(obj);
+    if (rb_fd >= 0)
+        close(rb_fd);
+    for (int i = 0; i < FEATURE_COUNT; i++)
+        destroy_feature(&features[i]);
     return ret;
 }

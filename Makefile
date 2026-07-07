@@ -21,16 +21,40 @@ endif
 all: tablesnoop
 static: tablesnoop
 
-vmlinux.h:
-	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+bpf/vmlinux.h:
+	$(BPFTOOL) btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 
-tablesnoop.bpf.o: tablesnoop.bpf.c vmlinux.h tablesnoop.h flavors.h
-	$(BPF_CC) -g -O2 -target bpf -c $< -o $@
+bpf/fib.bpf.o: bpf/fib.bpf.c bpf/vmlinux.h common.h bpf/common.bpf.h bpf/flavors.h
+	$(BPF_CC) -g -O2 -target bpf -I. -c $< -o $@
 
-tablesnoop.skel.h: tablesnoop.bpf.o
+bpf/fib.skel.h: bpf/fib.bpf.o
 	$(BPFTOOL) gen skeleton $^ > $@
 
-tablesnoop.o: tablesnoop.c tablesnoop.skel.h tablesnoop.h
+bpf/srv6.bpf.o: bpf/srv6.bpf.c bpf/vmlinux.h common.h bpf/common.bpf.h bpf/flavors.h
+	$(BPF_CC) -g -O2 -target bpf -I. -c $< -o $@
+
+bpf/srv6.skel.h: bpf/srv6.bpf.o
+	$(BPFTOOL) gen skeleton $^ > $@
+
+bpf/mpls.bpf.o: bpf/mpls.bpf.c bpf/vmlinux.h common.h bpf/flavors.h
+	$(BPF_CC) -g -O2 -target bpf -I. -c $< -o $@
+
+bpf/mpls.skel.h: bpf/mpls.bpf.o
+	$(BPFTOOL) gen skeleton $^ > $@
+
+bpf/neigh.bpf.o: bpf/neigh.bpf.c bpf/vmlinux.h common.h bpf/flavors.h
+	$(BPF_CC) -g -O2 -target bpf -I. -c $< -o $@
+
+bpf/neigh.skel.h: bpf/neigh.bpf.o
+	$(BPFTOOL) gen skeleton $^ > $@
+
+bpf/fdb.bpf.o: bpf/fdb.bpf.c bpf/vmlinux.h common.h bpf/flavors.h
+	$(BPF_CC) -g -O2 -target bpf -I. -c $< -o $@
+
+bpf/fdb.skel.h: bpf/fdb.bpf.o
+	$(BPFTOOL) gen skeleton $^ > $@
+
+tablesnoop.o: tablesnoop.c bpf/fib.skel.h bpf/srv6.skel.h bpf/mpls.skel.h bpf/neigh.skel.h bpf/fdb.skel.h tablesnoop.h common.h
 	$(CC) $(STATIC) -g $(CFLAGS) -c $< -o $@
 
 tablesnoop: tablesnoop.o
@@ -40,4 +64,4 @@ install: tablesnoop
 	cp tablesnoop /usr/local/bin/
 
 clean:
-	rm *.o *.skel.h vmlinux.h tablesnoop
+	rm -f *.o bpf/*.o bpf/*.skel.h bpf/vmlinux.h tablesnoop
