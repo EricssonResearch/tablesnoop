@@ -37,6 +37,7 @@ struct {
     __type(value, struct rule_ctx);
 } rule_ctx_map SEC(".maps");
 
+/* Note: the array is zero-initialized */
 static __always_inline struct rule_ctx *get_rule_ctx(void)
 {
     __u32 zero = 0;

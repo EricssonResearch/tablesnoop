@@ -70,7 +70,7 @@ int BPF_PROG(fexit_neigh_create, struct neigh_table *tbl, const void *pkey,
 {
     if (env.filter_netns && env.my_netns_cookie != dev->nd_net.net->net_cookie)
         return BPF_OK;
-    
+
     struct tablesnoop_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct tablesnoop_event), 0);
     if (!e)
         return BPF_OK;

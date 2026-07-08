@@ -25,7 +25,8 @@ struct mpls_iptunnel_encap {
 
 //////////// ^^^^^ mpls internal stuff copied from the kernel ^^^^^ ///////////////
 
-/* Resolve ifindex to interface name within a netns*/
+/* Resolve ifindex to interface name within a netns.
+ * This replicates the functionailty of __dev_get_by_index() */
 static inline void get_ifname_netns(const struct net *netns, const int ifindex,
                                     char ifnamebuf[IFNAMSIZ])
 {

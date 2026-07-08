@@ -65,7 +65,6 @@ static struct mpls_route *mpls_route_input_rcu(struct net *net, unsigned int ind
     return platform_label[index]; //rcu_dereference(platform_label[index]);
 }
 
-// (why isn't this struct in vmlinux.h?)
 struct mpls_nh { /* next hop label forwarding entry */
         struct net_device       *nh_dev;
         netdevice_tracker       nh_dev_tracker;
@@ -83,7 +82,6 @@ struct mpls_nh { /* next hop label forwarding entry */
 };
 
 // see the comment about the memory layout of @rt_nh in net/mpls/internal.h
-// (why isn't this struct in vmlinux.h?)
 // linux/types.h: #define rcu_head callback_head
 struct mpls_route { /* next hop label forwarding entry */
         struct callback_head/*rcu_head*/         rt_rcu; // this struct is 2 pointers
