@@ -33,9 +33,11 @@ Usage: tablesnoop [OPTION...]
       --fib6                 Show IPv6 FIB lookups
   -g, --global               Collect events from all network namespaces
   -l, --lwt                  Show LightWeight Tunnel info (off by default)
+      --mpls                 Show MPLS lookups
       --neigh                Show neighbor lookups
       --rule4                Show IPv4 rule lookups
       --rule6                Show IPv6 rule lookups
+      --srv6                 Show SRv6 lookups
   -s, --separator            Print separator line after a timeout
   -v, --verbose              Enable detailed output
   -x, --show_failed          Show failed lookup results
