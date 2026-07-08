@@ -695,10 +695,10 @@ int main(int argc, char *argv[])
 
 cleanup:
     printf(RESET"\n"); //disable custom colors
+    for (int i = 0; i < FEATURE_COUNT; i++)
+        destroy_feature(&features[i]);
     ring_buffer__free(rb);
     if (rb_fd >= 0)
         close(rb_fd);
-    for (int i = 0; i < FEATURE_COUNT; i++)
-        destroy_feature(&features[i]);
     return ret;
 }
