@@ -609,7 +609,7 @@ bool module_loaded(const char *modname)
     return false;
 }
 
-static int __ignore_print(enum libbpf_print_level level, const char *fmt, va_list ap)
+static int ignore_print(enum libbpf_print_level level, const char *fmt, va_list ap)
 {
     (void)level; (void)fmt; (void)ap;
     return 0;
@@ -652,7 +652,7 @@ int main(int argc, char *argv[])
     }
 
     // Suppress libbpf errors — we handle failures ourselves
-    libbpf_set_print(__ignore_print);
+    libbpf_set_print(ignore_print);
 
     struct bpf_map_create_opts rb_opts = { .sz = sizeof(struct bpf_map_create_opts) };
     rb_fd = bpf_map_create(BPF_MAP_TYPE_RINGBUF, "rb", 0, 0, 256 * 4096, &rb_opts);
